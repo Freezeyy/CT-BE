@@ -1,14 +1,23 @@
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Roles', {
-      id: {
+    await queryInterface.createTable('Notifications', {
+      noti_id: {
         allowNull: false,
         autoIncrement: true,
         primaryKey: true,
         type: Sequelize.INTEGER,
       },
-      name: {
+      noti_type: {
         type: Sequelize.STRING,
+        allowNull: false,
+      },
+      noti_title: {
+        type: Sequelize.STRING,
+        allowNull: true,
+      },
+      noti_message: {
+        type: Sequelize.TEXT,
+        allowNull: true,
       },
       createdAt: {
         allowNull: false,
@@ -23,7 +32,7 @@ module.exports = {
     });
   },
   down: async (queryInterface) => {
-    await queryInterface.dropTable('Roles');
+    await queryInterface.dropTable('Notifications');
   },
 };
 

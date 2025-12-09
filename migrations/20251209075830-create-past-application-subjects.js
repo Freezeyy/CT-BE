@@ -1,29 +1,37 @@
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Users', {
-      id: {
+    await queryInterface.createTable('PastApplicationSubjects', {
+      pastSubject_id: {
         allowNull: false,
         autoIncrement: true,
         primaryKey: true,
         type: Sequelize.INTEGER,
       },
-      name: {
+      pastSubject_code: {
         type: Sequelize.STRING,
+        allowNull: false,
       },
-      password: {
+      pastSubject_name: {
         type: Sequelize.STRING,
+        allowNull: false,
       },
-      phone: {
-        allowNull: true,
+      pastSubject_grade: {
         type: Sequelize.STRING,
+        allowNull: false,
       },
-      email: {
-        type: Sequelize.STRING,
-        unique: true,
-      },
-      image: {
-        allowNull: true,
+      pastSubject_syllabus_path: {
         type: Sequelize.TEXT,
+        allowNull: true,
+      },
+      application_subject_id: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        references: {
+          model: 'NewApplicationSubjects',
+          key: 'application_subject_id',
+        },
+        onUpdate: 'CASCADE',
+        onDelete: 'CASCADE',
       },
       createdAt: {
         allowNull: false,
@@ -35,22 +43,10 @@ module.exports = {
         type: Sequelize.DATE,
         defaultValue: Sequelize.fn('NOW'),
       },
-      reset_token: {
-        allowNull: true,
-        type: Sequelize.STRING,
-      },
-      verifiedAt: {
-        allowNull: true,
-        type: Sequelize.DATE,
-      },
-      RoleId: {
-        allowNull: true,
-        type: Sequelize.INTEGER,
-      },
     });
   },
   down: async (queryInterface) => {
-    await queryInterface.dropTable('Users');
+    await queryInterface.dropTable('PastApplicationSubjects');
   },
 };
 

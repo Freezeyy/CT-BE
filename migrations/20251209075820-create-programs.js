@@ -1,29 +1,33 @@
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Users', {
-      id: {
+    await queryInterface.createTable('Programs', {
+      program_id: {
         allowNull: false,
         autoIncrement: true,
         primaryKey: true,
         type: Sequelize.INTEGER,
       },
-      name: {
+      program_name: {
         type: Sequelize.STRING,
+        allowNull: false,
       },
-      password: {
+      program_code: {
         type: Sequelize.STRING,
+        allowNull: false,
       },
-      phone: {
-        allowNull: true,
-        type: Sequelize.STRING,
-      },
-      email: {
-        type: Sequelize.STRING,
-        unique: true,
-      },
-      image: {
-        allowNull: true,
+      program_structure: {
         type: Sequelize.TEXT,
+        allowNull: true,
+      },
+      campus_id: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        references: {
+          model: 'Campuses',
+          key: 'campus_id',
+        },
+        onUpdate: 'CASCADE',
+        onDelete: 'RESTRICT',
       },
       createdAt: {
         allowNull: false,
@@ -35,22 +39,10 @@ module.exports = {
         type: Sequelize.DATE,
         defaultValue: Sequelize.fn('NOW'),
       },
-      reset_token: {
-        allowNull: true,
-        type: Sequelize.STRING,
-      },
-      verifiedAt: {
-        allowNull: true,
-        type: Sequelize.DATE,
-      },
-      RoleId: {
-        allowNull: true,
-        type: Sequelize.INTEGER,
-      },
     });
   },
   down: async (queryInterface) => {
-    await queryInterface.dropTable('Users');
+    await queryInterface.dropTable('Programs');
   },
 };
 

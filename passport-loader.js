@@ -5,67 +5,149 @@ const passport = require('passport');
 const bcrypt = require('bcrypt');
 const moment = require('moment');
 const { encoderBase64 } = require('./helper');
-// load user model
-const UserModel = require('./models').User;
+// load models
+const models = require('./models');
+const Student = models.Student;
+const Lecturer = models.Lecturer;
 
-// Signup passport
+// Signup passport - only students can signup
 passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField: 'password', passReqToCallback: true },
   async (req, uname, pass, done) => {
     const {
-      name, email, password, phone,
+      name, email, password, phone, program_id, campus_id,
     } = req.body;
-    UserModel.findOne({ where: { email } }).then((user) => {
-      if (user) return done(null, false, { message: 'That email is already taken' });
-      const hashpass = bcrypt.hashSync(password, bcrypt.genSaltSync());
-      const data = {
-        name, email, password: hashpass, phone,
-      };
-      UserModel.create(data).then((newUser) => {
-        if (!newUser) return done(null, false);
-        if (newUser) return done(null, newUser);
-        return null;
+    
+    // Validate required fields
+    if (!name || !email || !password || !program_id || !campus_id) {
+      return done(null, false, { message: 'Missing required fields: name, email, password, program_id, and campus_id are required' });
+    }
+    
+    // Check if email exists in either Student or Lecturer
+    const student = await Student.findOne({ where: { student_email: email } });
+    const lecturer = await Lecturer.findOne({ where: { lecturer_email: email } });
+    
+    if (student || lecturer) {
+      return done(null, false, { message: 'That email is already taken' });
+    }
+    
+    const hashpass = bcrypt.hashSync(password, bcrypt.genSaltSync());
+    
+    try {
+      // Only students can signup
+      // old_campus_id will be set by coordinator after student submits application
+      const newStudent = await Student.create({
+        student_name: name,
+        student_email: email,
+        student_password: hashpass,
+        student_phone: phone || null,
+        program_id: program_id, // Required - program they want to apply for credit transfer
+        campus_id: campus_id, // Required - campus they want to transfer credits to
+        old_campus_id: null, // Will be set by coordinator later
       });
-      return null;
-    });
+      return done(null, newStudent);
+    } catch (error) {
+      return done(error, false);
+    }
   }));
 
-// Login passport
+// Login passport - checks both Student and Lecturer
 passport.use('login', new LocalStrategy({ usernameField: 'email', passwordField: 'password' },
   async (email, password, done) => {
     try {
-      // Find the user associated with the email/username provided by the user
-      const user = await UserModel.findOne({ where: { email } });
+      // Check Student first
+      let user = await Student.findOne({ where: { student_email: email } });
+      let passwordField = 'student_password';
+      
+      // If not found in Student, check Lecturer
+      if (!user) {
+        user = await Lecturer.findOne({ where: { lecturer_email: email } });
+        passwordField = 'lecturer_password';
+      }
+      
       if (!user) return done(null, false, { message: 'User not found' });
-      // Validate password & make sure it matches with the corresponding hash stored in the database
-      // If the passwords match, it returns a value of true.
-      const validate = await bcrypt.compare(password, user.password);
+      
+      // Validate password
+      const validate = await bcrypt.compare(password, user[passwordField]);
       if (!validate) return done(null, false, { message: 'Wrong Password' });
-      // //Send the user information to the next middleware
+      
+      // Add userType and other fields to user object for JWT
+      user.userType = user.student_id ? 'student' : 'lecturer';
+      user.id = user.student_id || user.lecturer_id;
+      user.email = user.student_email || user.lecturer_email;
+      // Add is_admin flag for lecturers (handle MySQL boolean conversion)
+      if (user.lecturer_id) {
+        user.is_admin = user.is_admin === true || user.is_admin === 1 || user.is_admin === '1';
+      }
+      
       return done(null, user, { message: 'Logged in Successfully' });
     } catch (error) {
       return done(error, false, { message: error });
     }
   }));
 
-// JWT passport
+// JWT passport - checks both Student and Lecturer
 passport.use('jwt', new JWTstrategy({
   jwtFromRequest: ExtractJWT.fromAuthHeaderAsBearerToken(),
   secretOrKey: process.env.PROJECT_JWT_SECRET,
 }, async (jwt_payload, done) => {
-  const user = await UserModel.findOne({ where: { id: jwt_payload.uid } });
-  if (user) {
-    return done(null, user);
+  try {
+    // Check userType from JWT payload
+    if (jwt_payload.userType === 'lecturer') {
+      const user = await Lecturer.findOne({ where: { lecturer_id: jwt_payload.uid } });
+      if (user) {
+        user.userType = 'lecturer';
+        user.id = user.lecturer_id;
+        user.email = user.lecturer_email;
+        // Handle MySQL boolean conversion (0/1 to true/false)
+        user.is_admin = user.is_admin === true || user.is_admin === 1 || user.is_admin === '1';
+        return done(null, user);
+      }
+    } else {
+      // Default to student
+      const user = await Student.findOne({ where: { student_id: jwt_payload.uid } });
+      if (user) {
+        user.userType = 'student';
+        user.id = user.student_id;
+        user.email = user.student_email;
+        return done(null, user);
+      }
+    }
+    return done(null, false);
+  } catch (error) {
+    return done(error, false);
   }
-  return done(null, false);
 }));
 
 passport.use('forgotpasswordjwt', new JWTstrategy({
   jwtFromRequest: ExtractJWT.fromBodyField('token'),
   secretOrKey: process.env.PROJECT_JWT_SECRET,
 }, async (jwt_payload, done) => {
-  const user = await UserModel.findOne({ where: { id: encoderBase64(jwt_payload.uid, false) } });
-  if (!user) return done('Fail to validate user', false); // not valid user
-  if (moment().unix() > encoderBase64(jwt_payload.token, false)) return done('Token expired', false); // expired
-  if (user) return done(null, user);
-  return null;
+  try {
+    const userId = encoderBase64(jwt_payload.uid, false);
+    
+    // Check userType from JWT payload
+    let user;
+    if (jwt_payload.userType === 'lecturer') {
+      user = await Lecturer.findOne({ where: { lecturer_id: userId } });
+      if (user) {
+        user.userType = 'lecturer';
+        user.id = user.lecturer_id;
+        user.email = user.lecturer_email;
+        user.is_admin = user.is_admin || false;
+      }
+    } else {
+      user = await Student.findOne({ where: { student_id: userId } });
+      if (user) {
+        user.userType = 'student';
+        user.id = user.student_id;
+        user.email = user.student_email;
+      }
+    }
+    
+    if (!user) return done('Fail to validate user', false);
+    if (moment().unix() > encoderBase64(jwt_payload.token, false)) return done('Token expired', false);
+    return done(null, user);
+  } catch (error) {
+    return done(error, false);
+  }
 }));

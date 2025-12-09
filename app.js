@@ -24,8 +24,11 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 
 // for parsing multipart/form-data
-app.use(upload.array());
+// Accept any field names - will be filtered in controllers
+app.use(upload.any());
 app.use(express.static('public'));
+// Serve uploaded files (programs and syllabi) - accessible without auth
+app.use('/uploads', express.static('uploads'));
 
 // passport
 require('./passport-loader');

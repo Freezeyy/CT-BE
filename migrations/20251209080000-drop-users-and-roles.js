@@ -1,5 +1,34 @@
 module.exports = {
-  up: async (queryInterface, Sequelize) => {
+  up: async (queryInterface) => {
+    // Drop Users table first (it has foreign key to Roles)
+    await queryInterface.dropTable('Users');
+    // Then drop Roles table
+    await queryInterface.dropTable('Roles');
+  },
+  down: async (queryInterface, Sequelize) => {
+    // Recreate Roles table
+    await queryInterface.createTable('Roles', {
+      id: {
+        allowNull: false,
+        autoIncrement: true,
+        primaryKey: true,
+        type: Sequelize.INTEGER,
+      },
+      name: {
+        type: Sequelize.STRING,
+      },
+      createdAt: {
+        allowNull: false,
+        type: Sequelize.DATE,
+        defaultValue: Sequelize.fn('NOW'),
+      },
+      updatedAt: {
+        allowNull: false,
+        type: Sequelize.DATE,
+        defaultValue: Sequelize.fn('NOW'),
+      },
+    });
+    // Recreate Users table
     await queryInterface.createTable('Users', {
       id: {
         allowNull: false,
@@ -48,9 +77,6 @@ module.exports = {
         type: Sequelize.INTEGER,
       },
     });
-  },
-  down: async (queryInterface) => {
-    await queryInterface.dropTable('Users');
   },
 };
 

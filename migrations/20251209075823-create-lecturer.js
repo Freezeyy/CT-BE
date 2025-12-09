@@ -1,29 +1,38 @@
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Users', {
-      id: {
+    await queryInterface.createTable('Lecturers', {
+      lecturer_id: {
         allowNull: false,
         autoIncrement: true,
         primaryKey: true,
         type: Sequelize.INTEGER,
       },
-      name: {
+      lecturer_name: {
         type: Sequelize.STRING,
+        allowNull: false,
       },
-      password: {
+      lecturer_email: {
         type: Sequelize.STRING,
-      },
-      phone: {
-        allowNull: true,
-        type: Sequelize.STRING,
-      },
-      email: {
-        type: Sequelize.STRING,
+        allowNull: false,
         unique: true,
       },
-      image: {
-        allowNull: true,
+      lecturer_password: {
+        type: Sequelize.STRING,
+        allowNull: false,
+      },
+      lecturer_image: {
         type: Sequelize.TEXT,
+        allowNull: true,
+      },
+      campus_id: {
+        type: Sequelize.INTEGER,
+        allowNull: false,
+        references: {
+          model: 'Campuses',
+          key: 'campus_id',
+        },
+        onUpdate: 'CASCADE',
+        onDelete: 'RESTRICT',
       },
       createdAt: {
         allowNull: false,
@@ -35,22 +44,10 @@ module.exports = {
         type: Sequelize.DATE,
         defaultValue: Sequelize.fn('NOW'),
       },
-      reset_token: {
-        allowNull: true,
-        type: Sequelize.STRING,
-      },
-      verifiedAt: {
-        allowNull: true,
-        type: Sequelize.DATE,
-      },
-      RoleId: {
-        allowNull: true,
-        type: Sequelize.INTEGER,
-      },
     });
   },
   down: async (queryInterface) => {
-    await queryInterface.dropTable('Users');
+    await queryInterface.dropTable('Lecturers');
   },
 };
 
