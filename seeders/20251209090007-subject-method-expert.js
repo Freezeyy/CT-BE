@@ -24,7 +24,7 @@ module.exports = {
       {
         sme_id: 3,
         lecturer_id: 3, // Dr. Sarah Johnson
-        course_id: 3, // Object-Oriented Programming
+        course_id: 9, // Object-Oriented Programming
         application_id: null,
         start_date: new Date('2024-01-01'),
         end_date: null,
