@@ -3,7 +3,7 @@ module.exports = {
     await queryInterface.bulkInsert('StudentOldCampuses', [
       {
         old_campus_id: 1,
-        old_campus_name: 'University of Technology',
+        old_campus_name: 'GMI',
         createdAt: new Date(),
         updatedAt: new Date(),
       },

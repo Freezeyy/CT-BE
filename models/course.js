@@ -20,11 +20,8 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'course_id',
         as: 'subjectMethodExperts',
       });
-      // Course has many NewApplicationSubjects (target course)
-      this.hasMany(models.NewApplicationSubject, {
-        foreignKey: 'course_id',
-        as: 'newApplicationSubjects',
-      });
+      // Note: NewApplicationSubjects are linked to courses by name matching, not by foreign key
+      // The application_subject_name in NewApplicationSubjects matches course_name in Courses
     }
   }
   Course.init({

@@ -3,6 +3,8 @@ const bcrypt = require('bcrypt');
 module.exports = {
   up: async (queryInterface) => {
     const hashpass = bcrypt.hashSync('password123', bcrypt.genSaltSync());
+    const hashpass2 = bcrypt.hashSync('fareez', bcrypt.genSaltSync());
+    const hashpass3 = bcrypt.hashSync('qila', bcrypt.genSaltSync());
     
     await queryInterface.bulkInsert('Students', [
       {
@@ -50,6 +52,30 @@ module.exports = {
         program_id: 3, // BIMD
         campus_id: 1, // Main Campus
         old_campus_id: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        student_id: 5,
+        student_name: 'Fareez',
+        student_email: 'fareez@university.edu',
+        student_password: hashpass2,
+        student_phone: '+60149718736',
+        program_id: 1, // BIMD
+        campus_id: 1, // Main Campus
+        old_campus_id: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        student_id: 6,
+        student_name: 'Qila',
+        student_email: 'qila@university.edu',
+        student_password: hashpass3,
+        student_phone: '+60149718736',
+        program_id: 2, // BIMD
+        campus_id: 1, // Main Campus
+        old_campus_id: 1,
         createdAt: new Date(),
         updatedAt: new Date(),
       },

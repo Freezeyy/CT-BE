@@ -46,6 +46,8 @@ module.exports = (sequelize, DataTypes) => {
     ct_status: DataTypes.STRING,
     ct_notes: DataTypes.TEXT,
     prev_campus_name: DataTypes.STRING,
+    prev_programme_name: DataTypes.STRING,
+    transcript_path: DataTypes.STRING,
     student_id: DataTypes.INTEGER,
     coordinator_id: DataTypes.INTEGER,
     program_id: DataTypes.INTEGER,

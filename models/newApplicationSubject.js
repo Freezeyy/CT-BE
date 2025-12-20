@@ -10,6 +10,11 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'ct_id',
         as: 'creditTransferApplication',
       });
+      // NewApplicationSubject belongs to Course
+      this.belongsTo(models.Course, {
+        foreignKey: 'course_id',
+        as: 'course',
+      });
       // NewApplicationSubject has many PastApplicationSubjects
       this.hasMany(models.PastApplicationSubject, {
         foreignKey: 'application_subject_id',
@@ -33,7 +38,8 @@ module.exports = (sequelize, DataTypes) => {
       primaryKey: true,
       autoIncrement: true,
     },
-    application_subject_name: DataTypes.STRING,
+    application_subject_name: DataTypes.STRING, // Keep for backward compatibility, can be derived from course
+    course_id: DataTypes.INTEGER, // FK to Courses table
     ct_id: DataTypes.INTEGER,
   }, {
     sequelize,

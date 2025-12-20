@@ -3,40 +3,49 @@ const models = require('../models');
 const Student = models.Student;
 const Lecturer = models.Lecturer;
 
-// Create a new lecturer with optional role assignment (admin only)
+// Create a new lecturer (admin only) - no role assignment during creation
 async function createLecturer(req, res) {
   try {
+    const lecturerId = req.user.id;
+    const userType = req.user.userType;
+    
+    // Verify user is admin
+    if (userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can create lecturers' });
+    }
+
+    // Get admin's campus_id
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer) {
+      return res.status(404).json({ error: 'Admin lecturer not found' });
+    }
+
+    const adminCampusId = adminLecturer.campus_id;
+    if (!adminCampusId) {
+      return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    }
+
     const {
       lecturer_name,
       lecturer_email,
       lecturer_password,
       lecturer_image,
-      campus_id,
+      campus_id, // Should match admin's campus_id
       is_admin = false,
-      // Role assignment fields
-      role_type, // 'coordinator', 'sme', 'hos', or null
-      program_id, // Required if role_type is 'coordinator'
-      course_id, // Required if role_type is 'sme'
-      start_date,
-      end_date,
     } = req.body;
 
     // Validate required fields
-    if (!lecturer_name || !lecturer_email || !lecturer_password || !campus_id) {
+    if (!lecturer_name || !lecturer_email || !lecturer_password) {
       return res.status(400).json({
-        error: 'Missing required fields: lecturer_name, lecturer_email, lecturer_password, and campus_id are required',
+        error: 'Missing required fields: lecturer_name, lecturer_email, and lecturer_password are required',
       });
     }
 
-    // Validate role-specific fields
-    if (role_type === 'coordinator' && !program_id) {
-      return res.status(400).json({
-        error: 'program_id is required when role_type is "coordinator"',
-      });
-    }
-    if (role_type === 'sme' && !course_id) {
-      return res.status(400).json({
-        error: 'course_id is required when role_type is "sme"',
+    // Ensure campus_id matches admin's campus_id
+    const lecturerCampusId = campus_id ? parseInt(campus_id) : adminCampusId;
+    if (lecturerCampusId !== adminCampusId) {
+      return res.status(403).json({
+        error: 'You can only create lecturers for your own campus',
       });
     }
 
@@ -51,75 +60,17 @@ async function createLecturer(req, res) {
     // Hash password
     const hashpass = bcrypt.hashSync(lecturer_password, bcrypt.genSaltSync());
 
-    // Create lecturer
+    // Create lecturer (always use admin's campus_id)
     const newLecturer = await Lecturer.create({
       lecturer_name,
       lecturer_email,
       lecturer_password: hashpass,
       lecturer_image: lecturer_image || null,
       is_admin: is_admin || false,
-      campus_id,
+      campus_id: adminCampusId, // Always use admin's campus_id
     });
 
-    // Assign role if specified
-    let roleAssignment = null;
-    if (role_type) {
-      const roleStartDate = start_date ? new Date(start_date) : new Date();
-      const roleEndDate = end_date ? new Date(end_date) : null;
-
-      switch (role_type.toLowerCase()) {
-        case 'coordinator':
-          // Verify program exists
-          const program = await models.Program.findByPk(program_id);
-          if (!program) {
-            // Rollback lecturer creation
-            await newLecturer.destroy();
-            return res.status(404).json({ error: 'Program not found' });
-          }
-          roleAssignment = await models.Coordinator.create({
-            lecturer_id: newLecturer.lecturer_id,
-            program_id,
-            appointment_id: null,
-            start_date: roleStartDate,
-            end_date: roleEndDate,
-          });
-          break;
-
-        case 'sme':
-        case 'subjectmethodexpert':
-          // Verify course exists
-          const course = await models.Course.findByPk(course_id);
-          if (!course) {
-            // Rollback lecturer creation
-            await newLecturer.destroy();
-            return res.status(404).json({ error: 'Course not found' });
-          }
-          roleAssignment = await models.SubjectMethodExpert.create({
-            lecturer_id: newLecturer.lecturer_id,
-            course_id,
-            application_id: null,
-            start_date: roleStartDate,
-            end_date: roleEndDate,
-          });
-          break;
-
-        case 'hos':
-        case 'headofsection':
-          roleAssignment = await models.HeadOfSection.create({
-            lecturer_id: newLecturer.lecturer_id,
-            start_date: roleStartDate,
-            end_date: roleEndDate,
-          });
-          break;
-
-        default:
-          return res.status(400).json({
-            error: 'Invalid role_type. Must be: coordinator, sme, or hos',
-          });
-      }
-    }
-
-    // Return lecturer without password, including role info
+    // Return lecturer without password
     const lecturerResponse = {
       lecturer_id: newLecturer.lecturer_id,
       lecturer_name: newLecturer.lecturer_name,
@@ -127,10 +78,6 @@ async function createLecturer(req, res) {
       lecturer_image: newLecturer.lecturer_image,
       is_admin: newLecturer.is_admin,
       campus_id: newLecturer.campus_id,
-      role_assignment: roleAssignment ? {
-        role_type,
-        ...roleAssignment.toJSON(),
-      } : null,
     };
 
     res.status(201).json({ lecturer: lecturerResponse });
@@ -144,6 +91,12 @@ async function getLecturers(req, res) {
   try {
     const lecturers = await Lecturer.findAll({
       attributes: { exclude: ['lecturer_password'] },
+      include: [{
+        model: models.Campus,
+        as: 'campus',
+        attributes: ['campus_id', 'campus_name'],
+        required: false,
+      }],
       order: [['createdAt', 'DESC']],
     });
     res.json({ lecturers });
@@ -319,6 +272,41 @@ async function assignHeadOfSection(req, res) {
       message: 'Head of Section assigned successfully',
       hos,
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Get all programs for admin's campus
+async function getPrograms(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    const userType = req.user.userType;
+    
+    // Verify user is admin
+    if (userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can view programs' });
+    }
+
+    // Get admin's campus_id
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer) {
+      return res.status(404).json({ error: 'Admin lecturer not found' });
+    }
+
+    const adminCampusId = adminLecturer.campus_id;
+    if (!adminCampusId) {
+      return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    }
+
+    // Get all programs for this campus
+    const programs = await models.Program.findAll({
+      where: { campus_id: adminCampusId },
+      attributes: ['program_id', 'program_name', 'program_code', 'campus_id'],
+      order: [['program_code', 'ASC']],
+    });
+
+    res.json({ programs });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -571,6 +559,7 @@ module.exports = {
   createLecturer,
   getLecturers,
   getStudents,
+  getPrograms,
   updateLecturerRole,
   getStaffAssignments,
   // Keep old endpoints for backward compatibility (optional - can remove later)
