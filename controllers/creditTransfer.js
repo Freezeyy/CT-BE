@@ -45,12 +45,19 @@ async function processMappings(application, mappingsArray, files, isDraft = fals
     // Determine course_id - use provided course_id or find by course name
     let resolvedCourseId = course_id;
     if (!resolvedCourseId) {
-      // Fallback: find course by name matching (for backward compatibility)
+      // Fallback: find course by name matching via many-to-many relationship
       const course = await models.Course.findOne({
         where: {
-          program_id: application.program_id,
           course_name: currentSubject,
         },
+        include: [{
+          model: models.Program,
+          as: 'programs',
+          where: { program_id: application.program_id },
+          attributes: [],
+          through: { attributes: [] },
+          required: true,
+        }],
       });
       if (course) {
         resolvedCourseId = course.course_id;
@@ -66,7 +73,7 @@ async function processMappings(application, mappingsArray, files, isDraft = fals
 
     // Create past application subjects
     for (const pastSubject of pastSubjects) {
-      const { code, name, grade, syllabus: syllabusFileName } = pastSubject;
+      const { code, name, grade, credit, syllabus: syllabusFileName } = pastSubject;
 
       let syllabusPath = null;
       let originalFilename = null;
@@ -118,6 +125,7 @@ async function processMappings(application, mappingsArray, files, isDraft = fals
         pastSubject_code: code,
         pastSubject_name: name,
         pastSubject_grade: grade,
+        pastSubject_credit: credit ? parseInt(credit, 10) : null,
         pastSubject_syllabus_path: syllabusPath,
         original_filename: originalFilename,
         application_subject_id: newApplicationSubject.application_subject_id,
@@ -681,12 +689,19 @@ async function reviewSubject(req, res) {
         // Use course_id from NewApplicationSubject (preferred)
         courseId = pastSubject.newApplicationSubject.course_id;
       } else {
-        // Fallback: Try to find course by name match (for backward compatibility)
+        // Fallback: Try to find course by name match via many-to-many relationship
         const course = await models.Course.findOne({
           where: {
-            program_id: application.program_id,
             course_name: pastSubject.newApplicationSubject.application_subject_name,
           },
+          include: [{
+            model: models.Program,
+            as: 'programs',
+            where: { program_id: application.program_id },
+            attributes: [],
+            through: { attributes: [] },
+            required: true,
+          }],
         });
         if (course) {
           courseId = course.course_id;
@@ -697,16 +712,40 @@ async function reviewSubject(req, res) {
         return res.status(400).json({ error: 'Cannot determine course for SME assignment. Please ensure the application subject has a valid course_id.' });
       }
 
-      // Find active SME for this course
-      const sme = await models.SubjectMethodExpert.findOne({
-        where: {
-          course_id: courseId,
-          end_date: null,
-        },
-      });
-
-      if (!sme) {
-        return res.status(404).json({ error: 'No active SME found for this course. Please assign an SME first.' });
+      // Get SME - either from request body (coordinator's choice) or find first active one
+      let sme = null;
+      if (req.body.sme_id) {
+        sme = await models.SubjectMethodExpert.findOne({
+          where: {
+            sme_id: req.body.sme_id,
+            course_id: courseId,
+            end_date: null,
+          },
+          include: [{
+            model: models.Lecturer,
+            as: 'lecturer',
+            attributes: ['lecturer_id', 'lecturer_name', 'lecturer_email'],
+          }],
+        });
+        if (!sme) {
+          return res.status(404).json({ error: 'Selected SME not found or not active for this course.' });
+        }
+      } else {
+        // Fallback: find first active SME for this course
+        sme = await models.SubjectMethodExpert.findOne({
+          where: {
+            course_id: courseId,
+            end_date: null,
+          },
+          include: [{
+            model: models.Lecturer,
+            as: 'lecturer',
+            attributes: ['lecturer_id', 'lecturer_name', 'lecturer_email'],
+          }],
+        });
+        if (!sme) {
+          return res.status(404).json({ error: 'No active SME found for this course. Please assign an SME first.' });
+        }
       }
 
       // Check if assignment already exists
@@ -751,6 +790,36 @@ async function reviewSubject(req, res) {
     return res.status(400).json({ error: 'Invalid action. Use: check_template3, approve_template3, or send_to_sme' });
   } catch (error) {
     console.error('Review subject error:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Get all active SMEs for a course (for coordinator to choose from)
+async function getSMEsForCourse(req, res) {
+  try {
+    const { course_id } = req.params;
+    
+    if (!course_id) {
+      return res.status(400).json({ error: 'course_id is required' });
+    }
+
+    // Get all active SMEs for this course
+    const smes = await models.SubjectMethodExpert.findAll({
+      where: {
+        course_id: parseInt(course_id),
+        end_date: null,
+      },
+      include: [{
+        model: models.Lecturer,
+        as: 'lecturer',
+        attributes: ['lecturer_id', 'lecturer_name', 'lecturer_email'],
+      }],
+      order: [['start_date', 'DESC']],
+    });
+
+    res.json({ smes });
+  } catch (error) {
+    console.error('Get SMEs for course error:', error);
     res.status(500).json({ error: error.message });
   }
 }
@@ -956,16 +1025,40 @@ async function checkTemplate3ForCurrentSubject(req, res) {
         return res.status(400).json({ error: 'Cannot determine course for SME assignment. Please ensure the application subject has a valid course_id.' });
       }
 
-      // Find active SME for this course
-      const sme = await models.SubjectMethodExpert.findOne({
-        where: {
-          course_id: courseId,
-          end_date: null,
-        },
-      });
-
-      if (!sme) {
-        return res.status(404).json({ error: 'No active SME found for this course. Please assign an SME first.' });
+      // Get SME - either from request body (coordinator's choice) or find first active one
+      let sme = null;
+      if (req.body.sme_id) {
+        sme = await models.SubjectMethodExpert.findOne({
+          where: {
+            sme_id: req.body.sme_id,
+            course_id: courseId,
+            end_date: null,
+          },
+          include: [{
+            model: models.Lecturer,
+            as: 'lecturer',
+            attributes: ['lecturer_id', 'lecturer_name', 'lecturer_email'],
+          }],
+        });
+        if (!sme) {
+          return res.status(404).json({ error: 'Selected SME not found or not active for this course.' });
+        }
+      } else {
+        // Fallback: find first active SME for this course
+        sme = await models.SubjectMethodExpert.findOne({
+          where: {
+            course_id: courseId,
+            end_date: null,
+          },
+          include: [{
+            model: models.Lecturer,
+            as: 'lecturer',
+            attributes: ['lecturer_id', 'lecturer_name', 'lecturer_email'],
+          }],
+        });
+        if (!sme) {
+          return res.status(404).json({ error: 'No active SME found for this course. Please assign an SME first.' });
+        }
       }
 
       const sentSubjects = [];
@@ -1087,6 +1180,7 @@ module.exports = {
   updateApplication,
   reviewSubject,
   checkTemplate3ForCurrentSubject,
+  getSMEsForCourse,
   uploadMiddleware, // Export for use in routes if needed
 };
 

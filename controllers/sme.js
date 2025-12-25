@@ -1,5 +1,7 @@
 const models = require('../models');
 const { Op } = require('sequelize');
+const path = require('path');
+const fs = require('fs');
 
 // Get SME assignments
 async function getSMEAssignments(req, res) {
@@ -213,6 +215,7 @@ async function getSubjectDetails(req, res) {
       pastSubject_code: ps.pastSubject_code,
       pastSubject_name: ps.pastSubject_name,
       pastSubject_grade: ps.pastSubject_grade,
+      pastSubject_credit: ps.pastSubject_credit,
       pastSubject_syllabus_path: ps.pastSubject_syllabus_path,
       original_filename: ps.original_filename,
       approval_status: ps.approval_status,
@@ -428,9 +431,53 @@ async function reviewSubject(req, res) {
   }
 }
 
+// Serve syllabus file with authentication
+async function getSyllabusFile(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    if (!lecturerId || req.user.userType !== 'lecturer') {
+      return res.status(403).json({ error: 'Only lecturers can view syllabus files' });
+    }
+
+    // Get filename from params (e.g., syllabus-1234567890-987654321.pdf)
+    const filename = req.params.filename;
+    if (!filename) {
+      return res.status(400).json({ error: 'Filename is required' });
+    }
+
+    // Prevent directory traversal attacks
+    const safeFilename = path.basename(filename);
+    if (safeFilename !== filename || filename.includes('..')) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    // Construct file path
+    const filePath = path.join(__dirname, '..', 'uploads', 'syllabi', safeFilename);
+
+    // Verify file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Verify it's a PDF file
+    if (!filePath.toLowerCase().endsWith('.pdf')) {
+      return res.status(400).json({ error: 'Invalid file type' });
+    }
+
+    // Send file with proper headers
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${safeFilename}"`);
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error('Get syllabus file error:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
   getSMEAssignments,
   getSubjectDetails,
   reviewSubject,
+  getSyllabusFile,
 };
 

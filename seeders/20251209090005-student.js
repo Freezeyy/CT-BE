@@ -63,7 +63,7 @@ module.exports = {
         student_phone: '+60149718736',
         program_id: 1, // BIMD
         campus_id: 1, // Main Campus
-        old_campus_id: 1,
+        old_campus_id: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       },

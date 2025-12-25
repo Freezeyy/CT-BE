@@ -31,6 +31,7 @@ module.exports = (sequelize, DataTypes) => {
     pastSubject_code: DataTypes.STRING,
     pastSubject_name: DataTypes.STRING,
     pastSubject_grade: DataTypes.STRING,
+    pastSubject_credit: DataTypes.INTEGER,
     pastSubject_syllabus_path: DataTypes.TEXT,
     original_filename: DataTypes.STRING,
     approval_status: DataTypes.STRING, // pending, approved_template3, approved_sme, rejected, needs_sme_review

@@ -312,6 +312,48 @@ async function getPrograms(req, res) {
   }
 }
 
+// Get all courses for admin's campus (for SME assignment - no program required)
+async function getCourses(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    const userType = req.user.userType;
+    
+    // Verify user is admin
+    if (userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can view courses' });
+    }
+
+    // Get admin's campus_id
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer) {
+      return res.status(404).json({ error: 'Admin lecturer not found' });
+    }
+
+    const adminCampusId = adminLecturer.campus_id;
+    if (!adminCampusId) {
+      return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    }
+
+    // Get all courses for this campus with their associated programs
+    const courses = await models.Course.findAll({
+      where: { campus_id: adminCampusId },
+      attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
+      include: [{
+        model: models.Program,
+        as: 'programs',
+        attributes: ['program_id', 'program_name', 'program_code'],
+        through: { attributes: [] }, // Exclude junction table attributes
+        required: false,
+      }],
+      order: [['course_code', 'ASC']],
+    });
+
+    res.json({ courses });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
 // Get all staff role assignments
 async function getStaffAssignments(req, res) {
   try {
@@ -560,6 +602,7 @@ module.exports = {
   getLecturers,
   getStudents,
   getPrograms,
+  getCourses,
   updateLecturerRole,
   getStaffAssignments,
   // Keep old endpoints for backward compatibility (optional - can remove later)

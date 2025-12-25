@@ -67,11 +67,18 @@ async function getProgramStructure(req, res) {
 
     const response = { program };
 
-    // If courses are requested, fetch and include them
+    // If courses are requested, fetch and include them via the many-to-many relationship
     if (includeCourses) {
       const courses = await models.Course.findAll({
-        where: { program_id: programId },
         attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
+        include: [{
+          model: models.Program,
+          as: 'programs',
+          where: { program_id: programId },
+          attributes: [],
+          through: { attributes: [] },
+          required: true,
+        }],
         order: [['course_name', 'ASC']],
       });
       response.courses = courses;
@@ -245,11 +252,21 @@ async function updateCourses(req, res) {
       return res.status(400).json({ error: 'courses must be an array' });
     }
 
-    // Get existing courses for this program
-    const existingCourses = await models.Course.findAll({
-      where: { program_id: programId },
+    // Get existing courses for this program via the many-to-many relationship
+    const program = await models.Program.findByPk(programId, {
+      include: [{
+        model: models.Course,
+        as: 'courses',
+        attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
+        through: { attributes: [] },
+      }],
     });
 
+    if (!program) {
+      return res.status(404).json({ error: 'Program not found' });
+    }
+
+    const existingCourses = program.courses || [];
     const existingCourseIds = new Set(existingCourses.map(c => c.course_id));
     const incomingCourseIds = new Set(
       coursesArray
@@ -257,37 +274,23 @@ async function updateCourses(req, res) {
         .map(c => c.course_id)
     );
 
-    // Delete courses that are not in the incoming array
-    // But first check if they have any references (SME assignments, etc.)
-    const coursesToDelete = existingCourses.filter(
+    // Remove courses from this program that are not in the incoming array
+    // Note: We're removing the association, not deleting the course itself
+    // (since courses can belong to multiple programs)
+    const coursesToRemove = existingCourses.filter(
       c => !incomingCourseIds.has(c.course_id)
     );
 
-    const deletionErrors = [];
-    const successfullyDeleted = [];
+    const removalErrors = [];
+    const successfullyRemoved = [];
 
-    for (const course of coursesToDelete) {
-      // Check if course has any SME assignments (SubjectMethodExpert references)
-      const smeAssignments = await models.SubjectMethodExpert.count({
-        where: { course_id: course.course_id },
-      });
-
-      if (smeAssignments > 0) {
-        deletionErrors.push({
-          course_id: course.course_id,
-          course_code: course.course_code,
-          course_name: course.course_name,
-          reason: `Cannot delete: Course has ${smeAssignments} Subject Method Expert assignment(s). Please remove or reassign SME assignments first.`,
-        });
-        continue; // Skip deletion
-      }
-
-      // Safe to delete - no references found
+    for (const course of coursesToRemove) {
       try {
-        await course.destroy();
-        successfullyDeleted.push(course.course_id);
+        // Remove the association between program and course
+        await program.removeCourse(course);
+        successfullyRemoved.push(course.course_id);
       } catch (error) {
-        deletionErrors.push({
+        removalErrors.push({
           course_id: course.course_id,
           course_code: course.course_code,
           course_name: course.course_name,
@@ -296,19 +299,7 @@ async function updateCourses(req, res) {
       }
     }
 
-    // If there are deletion errors, return them but still process updates/creates
-    if (deletionErrors.length > 0 && coursesToDelete.length > 0) {
-      // If ALL deletions failed, return error
-      if (successfullyDeleted.length === 0) {
-        return res.status(400).json({
-          error: 'Cannot delete some courses due to foreign key constraints',
-          details: deletionErrors,
-          message: 'Some courses cannot be deleted because they are referenced by Subject Method Expert assignments. Please remove or reassign those assignments first.',
-        });
-      }
-    }
-
-    // Process each course: create or update
+    // Process each course: create or update, then associate with program
     const processedCourses = [];
     for (const courseData of coursesArray) {
       const { course_id, course_code, course_name, course_credit } = courseData;
@@ -319,6 +310,7 @@ async function updateCourses(req, res) {
       }
 
       const courseCredit = course_credit ? parseInt(course_credit) : null;
+      let course;
 
       if (course_id && existingCourseIds.has(course_id)) {
         // Update existing course
@@ -330,26 +322,81 @@ async function updateCourses(req, res) {
           },
           { where: { course_id } }
         );
+        course = await models.Course.findByPk(course_id);
         processedCourses.push(course_id);
+      } else if (course_id) {
+        // Course exists but is not associated with this program yet
+        // Check if course exists in database
+        course = await models.Course.findByPk(course_id);
+        if (course) {
+          // Update course details
+          await course.update({
+            course_code,
+            course_name,
+            course_credit: courseCredit,
+          });
+          // Associate with this program
+          await program.addCourse(course);
+          processedCourses.push(course_id);
+        } else {
+          // Course ID provided but doesn't exist - create new
+          course = await models.Course.create({
+            course_code,
+            course_name,
+            course_credit: courseCredit,
+            campus_id: campusId,
+          });
+          await program.addCourse(course);
+          processedCourses.push(course.course_id);
+        }
       } else {
-        // Create new course
-        const newCourse = await models.Course.create({
-          course_code,
-          course_name,
-          course_credit: courseCredit,
-          program_id: programId,
-          campus_id: campusId,
+        // Create new course - but first check if a course with the same code already exists
+        // This prevents duplicate courses when the same course is added to multiple programs
+        const existingCourse = await models.Course.findOne({
+          where: {
+            course_code,
+            campus_id: campusId,
+          },
         });
-        processedCourses.push(newCourse.course_id);
+
+        if (existingCourse) {
+          // Course already exists - just associate it with this program
+          // Check if already associated
+          const isAssociated = await program.hasCourse(existingCourse);
+          if (!isAssociated) {
+            await program.addCourse(existingCourse);
+          }
+          // Update course details in case they changed
+          await existingCourse.update({
+            course_name,
+            course_credit: courseCredit,
+          });
+          processedCourses.push(existingCourse.course_id);
+        } else {
+          // Course doesn't exist - create new one
+          course = await models.Course.create({
+            course_code,
+            course_name,
+            course_credit: courseCredit,
+            campus_id: campusId,
+          });
+          // Associate with this program
+          await program.addCourse(course);
+          processedCourses.push(course.course_id);
+        }
       }
     }
 
-    // Fetch updated courses list
-    const updatedCourses = await models.Course.findAll({
-      where: { program_id: programId },
-      attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
-      order: [['course_name', 'ASC']],
+    // Fetch updated courses list for this program
+    const updatedProgram = await models.Program.findByPk(programId, {
+      include: [{
+        model: models.Course,
+        as: 'courses',
+        attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
+        through: { attributes: [] },
+      }],
     });
+    const updatedCourses = updatedProgram.courses || [];
 
     // Build response
     const response = {
@@ -357,15 +404,15 @@ async function updateCourses(req, res) {
       courses: updatedCourses,
     };
 
-    // Include warnings if some courses couldn't be deleted
-    if (deletionErrors.length > 0) {
-      response.warnings = deletionErrors;
-      response.message = `Courses updated successfully, but ${deletionErrors.length} course(s) could not be deleted due to existing references.`;
+    // Include warnings if some courses couldn't be removed from this program
+    if (removalErrors.length > 0) {
+      response.warnings = removalErrors;
+      response.message = `Courses updated successfully, but ${removalErrors.length} course(s) could not be removed from this program.`;
     }
 
-    // Include info about successful deletions
-    if (successfullyDeleted.length > 0) {
-      response.deleted = successfullyDeleted;
+    // Include info about successful removals
+    if (successfullyRemoved.length > 0) {
+      response.removed = successfullyRemoved;
     }
 
     res.json(response);
