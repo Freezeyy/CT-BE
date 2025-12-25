@@ -15,10 +15,17 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'program_id',
         as: 'students',
       });
-      // Program has many Courses
-      this.hasMany(models.Course, {
+      // Program belongs to many Courses (many-to-many)
+      this.belongsToMany(models.Course, {
+        through: models.ProgramCourse,
         foreignKey: 'program_id',
+        otherKey: 'course_id',
         as: 'courses',
+      });
+      // Program has many ProgramCourses (junction table entries)
+      this.hasMany(models.ProgramCourse, {
+        foreignKey: 'program_id',
+        as: 'programCourses',
       });
       // Program has many Coordinators
       this.hasMany(models.Coordinator, {

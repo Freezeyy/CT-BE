@@ -15,6 +15,7 @@ router.post('/admin/lecturer', m.requireAdmin, c.admin.createLecturer);
 router.get('/admin/lecturers', m.requireAdmin, c.admin.getLecturers);
 router.get('/admin/students', m.requireAdmin, c.admin.getStudents);
 router.get('/admin/programs', m.requireAdmin, c.admin.getPrograms);
+router.get('/admin/courses', m.requireAdmin, c.admin.getCourses);
 
 // Admin - Staff role management (MUST be before /role route to avoid conflicts)
 router.get('/admin/staff-assignments', m.requireAdmin, c.admin.getStaffAssignments);
@@ -28,12 +29,14 @@ router.get('/credit-transfer/applications', m.requireAdminOrUser, c.creditTransf
 router.get('/credit-transfer/coordinator/applications', m.requireAdminOrUser, c.creditTransfer.getCoordinatorApplications);
 router.post('/credit-transfer/coordinator/review-subject', m.requireAdminOrUser, c.creditTransfer.reviewSubject);
 router.post('/credit-transfer/coordinator/check-current-subject', m.requireAdminOrUser, c.creditTransfer.checkTemplate3ForCurrentSubject);
+router.get('/credit-transfer/coordinator/smes/:course_id', m.requireAdminOrUser, c.creditTransfer.getSMEsForCourse);
 router.put('/credit-transfer/application/:applicationId', m.requireAdminOrUser, c.creditTransfer.updateApplication);
 
 // SME routes
 router.get('/credit-transfer/sme/assignments', m.requireAdminOrUser, c.sme.getSMEAssignments);
 router.get('/credit-transfer/sme/subject/:applicationSubjectId', m.requireAdminOrUser, c.sme.getSubjectDetails);
 router.post('/credit-transfer/sme/review-subject/:applicationSubjectId', m.requireAdminOrUser, c.sme.reviewSubject);
+router.get('/credit-transfer/sme/syllabus/:filename', m.requireAdminOrUser, c.sme.getSyllabusFile);
 
 // Program routes
 // GET /api/program/structure - Get program structure (and optionally courses with ?includeCourses=true)
@@ -55,6 +58,8 @@ router.post('/appointment', m.requireAdminOrUser, c.appointment.createAppointmen
 router.get('/appointment/student', m.requireAdminOrUser, c.appointment.getStudentAppointments);
 router.get('/appointment/coordinator', m.requireAdminOrUser, c.appointment.getCoordinatorAppointments);
 router.put('/appointment/:appointmentId', m.requireAdminOrUser, c.appointment.updateAppointment);
+
+
 // Let's say the route below is very sensitive and we want only authorized users to have access
 // router.get('/nationalgps', c.nationalgps.index);
 // router.post('/nationalgps', c.nationalgps.saveorupdate);
