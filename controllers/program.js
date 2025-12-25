@@ -70,15 +70,23 @@ async function getProgramStructure(req, res) {
     // If courses are requested, fetch and include them via the many-to-many relationship
     if (includeCourses) {
       const courses = await models.Course.findAll({
-        attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
-        include: [{
-          model: models.Program,
-          as: 'programs',
-          where: { program_id: programId },
-          attributes: [],
-          through: { attributes: [] },
-          required: true,
-        }],
+        attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'category_id'],
+        include: [
+          {
+            model: models.Program,
+            as: 'programs',
+            where: { program_id: programId },
+            attributes: [],
+            through: { attributes: [] },
+            required: true,
+          },
+          {
+            model: models.Category,
+            as: 'category',
+            attributes: ['category_id', 'category_name'],
+            required: false,
+          },
+        ],
         order: [['course_name', 'ASC']],
       });
       response.courses = courses;
@@ -302,7 +310,7 @@ async function updateCourses(req, res) {
     // Process each course: create or update, then associate with program
     const processedCourses = [];
     for (const courseData of coursesArray) {
-      const { course_id, course_code, course_name, course_credit } = courseData;
+      const { course_id, course_code, course_name, course_credit, category_id } = courseData;
 
       // Validate required fields
       if (!course_code || !course_name) {
@@ -319,6 +327,7 @@ async function updateCourses(req, res) {
             course_code,
             course_name,
             course_credit: courseCredit,
+            category_id: category_id || null,
           },
           { where: { course_id } }
         );
@@ -334,6 +343,7 @@ async function updateCourses(req, res) {
             course_code,
             course_name,
             course_credit: courseCredit,
+            category_id: category_id || null,
           });
           // Associate with this program
           await program.addCourse(course);
@@ -370,6 +380,7 @@ async function updateCourses(req, res) {
           await existingCourse.update({
             course_name,
             course_credit: courseCredit,
+            category_id: category_id || null,
           });
           processedCourses.push(existingCourse.course_id);
         } else {
@@ -379,6 +390,7 @@ async function updateCourses(req, res) {
             course_name,
             course_credit: courseCredit,
             campus_id: campusId,
+            category_id: category_id || null,
           });
           // Associate with this program
           await program.addCourse(course);

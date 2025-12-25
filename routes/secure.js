@@ -59,6 +59,11 @@ router.get('/appointment/student', m.requireAdminOrUser, c.appointment.getStuden
 router.get('/appointment/coordinator', m.requireAdminOrUser, c.appointment.getCoordinatorAppointments);
 router.put('/appointment/:appointmentId', m.requireAdminOrUser, c.appointment.updateAppointment);
 
+// Category routes
+router.get('/categories', m.requireAdminOrUser, c.category.getCategories);
+router.post('/category', m.requireAdminOrUser, c.category.createCategory);
+router.delete('/category/:categoryId', m.requireAdminOrUser, c.category.deleteCategory);
+
 
 // Let's say the route below is very sensitive and we want only authorized users to have access
 // router.get('/nationalgps', c.nationalgps.index);

@@ -86,10 +86,54 @@ async function createLecturer(req, res) {
   }
 }
 
-// Get all lecturers (admin only)
+// Get all lecturers (admin only) with pagination and search
 async function getLecturers(req, res) {
   try {
+    const lecturerId = req.user.id;
+    const userType = req.user.userType;
+    
+    // Verify user is admin
+    if (userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can view lecturers' });
+    }
+
+    // Get admin's campus_id
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer) {
+      return res.status(404).json({ error: 'Admin lecturer not found' });
+    }
+
+    const adminCampusId = adminLecturer.campus_id;
+    if (!adminCampusId) {
+      return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    }
+
+    // Get pagination and search parameters
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    const search = req.query.search || '';
+
+    // Build where clause
+    const { Op } = require('sequelize');
+    const whereClause = {
+      campus_id: adminCampusId,
+    };
+
+    // Add search filter if provided
+    if (search.trim()) {
+      whereClause[Op.or] = [
+        { lecturer_name: { [Op.like]: `%${search.trim()}%` } },
+        { lecturer_email: { [Op.like]: `%${search.trim()}%` } },
+      ];
+    }
+
+    // Get total count for pagination
+    const totalCount = await Lecturer.count({ where: whereClause });
+
+    // Get lecturers with pagination
     const lecturers = await Lecturer.findAll({
+      where: whereClause,
       attributes: { exclude: ['lecturer_password'] },
       include: [{
         model: models.Campus,
@@ -98,8 +142,19 @@ async function getLecturers(req, res) {
         required: false,
       }],
       order: [['createdAt', 'DESC']],
+      limit,
+      offset,
     });
-    res.json({ lecturers });
+
+    res.json({
+      lecturers,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalCount / limit),
+        totalItems: totalCount,
+        itemsPerPage: limit,
+      },
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -74,6 +74,9 @@ function login(req, res, next) {
         // Determine user role
         const role = await determineUserRole(user);
         
+        // Get user's name
+        const userName = user.student_name || user.lecturer_name || user.email;
+        
         // Note: reset_token not in Student/Lecturer tables, can be added later if needed
         const jwt_content = { 
           uid: user.id, 
@@ -86,7 +89,7 @@ function login(req, res, next) {
         const token = jwt.sign(jwt_content, process.env.PROJECT_JWT_SECRET, { expiresIn: 86400 });
         const refreshToken = randtoken.uid(256);
         refreshTokens[refreshToken] = user.email;
-        res.json({ token, refreshToken, role });
+        res.json({ token, refreshToken, role, name: userName });
       });
     } catch (error) {
       next(error);
