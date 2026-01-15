@@ -393,13 +393,13 @@ async function getCourses(req, res) {
     const courses = await models.Course.findAll({
       where: { campus_id: adminCampusId },
       attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
-      include: [{
-        model: models.Program,
-        as: 'programs',
-        attributes: ['program_id', 'program_name', 'program_code'],
-        through: { attributes: [] }, // Exclude junction table attributes
-        required: false,
-      }],
+      // include: [{
+      //   model: models.Program,
+      //   as: 'programs',
+      //   attributes: ['program_id', 'program_name', 'program_code'],
+      //   through: { attributes: [] }, // Exclude junction table attributes
+      //   required: false,
+      // }],
       order: [['course_code', 'ASC']],
     });
 
