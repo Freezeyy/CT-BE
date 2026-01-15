@@ -74,6 +74,9 @@ async function processMappings(application, mappingsArray, files, isDraft = fals
     // Create past application subjects
     for (const pastSubject of pastSubjects) {
       const { code, name, grade, credit, syllabus: syllabusFileName } = pastSubject;
+      
+      // Debug: log what we received for credit
+      console.log(`Processing past subject - code: ${code}, name: ${name}, credit received:`, credit, 'type:', typeof credit);
 
       let syllabusPath = null;
       let originalFilename = null;
@@ -121,11 +124,18 @@ async function processMappings(application, mappingsArray, files, isDraft = fals
       }
 
       // Create past application subject with file path (can be null for drafts)
+      // Parse credit: handle null, undefined, empty string, and invalid numbers
+      let parsedCredit = null;
+      if (credit !== null && credit !== undefined && credit !== '') {
+        const parsed = parseInt(credit, 10);
+        parsedCredit = isNaN(parsed) ? null : parsed;
+      }
+
       await models.PastApplicationSubject.create({
         pastSubject_code: code,
         pastSubject_name: name,
         pastSubject_grade: grade,
-        pastSubject_credit: credit ? parseInt(credit, 10) : null,
+        pastSubject_credit: parsedCredit,
         pastSubject_syllabus_path: syllabusPath,
         original_filename: originalFilename,
         application_subject_id: newApplicationSubject.application_subject_id,
@@ -168,6 +178,8 @@ async function submitApplication(req, res) {
     let mappingsArray;
     try {
       mappingsArray = typeof mappings === 'string' ? JSON.parse(mappings) : mappings;
+      // Debug: log parsed mappings to see credit values
+      console.log('Parsed mappings array:', JSON.stringify(mappingsArray, null, 2));
     } catch (parseError) {
       return res.status(400).json({ error: 'Invalid mappings format. Must be valid JSON' });
     }
@@ -440,6 +452,7 @@ async function getStudentApplications(req, res) {
                 'pastSubject_code',
                 'pastSubject_name',
                 'pastSubject_grade',
+                'pastSubject_credit',
                 'pastSubject_syllabus_path',
                 'original_filename',
                 'application_subject_id',
