@@ -26,6 +26,9 @@ router.post('/admin/end-staff-role', m.requireAdmin, c.admin.endStaffRole);
 // Note: Files are handled by global multer in app.js
 router.post('/credit-transfer/apply', m.requireAdminOrUser, c.creditTransfer.submitApplication);
 router.get('/credit-transfer/applications', m.requireAdminOrUser, c.creditTransfer.getStudentApplications);
+
+// Student routes
+router.get('/student/profile', m.requireAdminOrUser, c.creditTransfer.getStudentProfile);
 router.get('/credit-transfer/coordinator/applications', m.requireAdminOrUser, c.creditTransfer.getCoordinatorApplications);
 router.post('/credit-transfer/coordinator/review-subject', m.requireAdminOrUser, c.creditTransfer.reviewSubject);
 router.post('/credit-transfer/coordinator/check-current-subject', m.requireAdminOrUser, c.creditTransfer.checkTemplate3ForCurrentSubject);
