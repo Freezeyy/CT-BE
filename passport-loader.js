@@ -14,7 +14,7 @@ const Lecturer = models.Lecturer;
 passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField: 'password', passReqToCallback: true },
   async (req, uname, pass, done) => {
     const {
-      name, email, password, phone, program_id, campus_id,
+      name, email, password, phone, program_id, campus_id, old_campus_name, prev_programme_name,
     } = req.body;
     
     // Validate required fields
@@ -33,8 +33,24 @@ passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField
     const hashpass = bcrypt.hashSync(password, bcrypt.genSaltSync());
     
     try {
+      // Handle old_campus_id - find or create StudentOldCampus
+      let oldCampusId = null;
+      if (old_campus_name) {
+        const StudentOldCampus = models.StudentOldCampus;
+        let oldCampus = await StudentOldCampus.findOne({ 
+          where: { old_campus_name: old_campus_name } 
+        });
+        
+        if (!oldCampus) {
+          // Create new StudentOldCampus if it doesn't exist
+          oldCampus = await StudentOldCampus.create({
+            old_campus_name: old_campus_name,
+          });
+        }
+        oldCampusId = oldCampus.old_campus_id;
+      }
+      
       // Only students can signup
-      // old_campus_id will be set by coordinator after student submits application
       const newStudent = await Student.create({
         student_name: name,
         student_email: email,
@@ -42,7 +58,8 @@ passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField
         student_phone: phone || null,
         program_id: program_id, // Required - program they want to apply for credit transfer
         campus_id: campus_id, // Required - campus they want to transfer credits to
-        old_campus_id: null, // Will be set by coordinator later
+        old_campus_id: oldCampusId, // Set from registration
+        prev_programme_name: prev_programme_name || null, // Previous programme name from registration
       });
       return done(null, newStudent);
     } catch (error) {

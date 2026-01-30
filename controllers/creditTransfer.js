@@ -523,7 +523,7 @@ async function getCoordinatorApplications(req, res) {
             {
               model: models.PastApplicationSubject,
               as: 'pastApplicationSubjects',
-              attributes: ['pastSubject_id', 'pastSubject_code', 'pastSubject_name', 'pastSubject_grade', 'pastSubject_syllabus_path', 'original_filename', 'approval_status', 'template3_id', 'similarity_percentage', 'needs_sme_review', 'sme_review_notes', 'coordinator_notes', 'application_subject_id'],
+              attributes: ['pastSubject_id', 'pastSubject_code', 'pastSubject_name', 'pastSubject_grade', 'pastSubject_credit', 'pastSubject_syllabus_path', 'original_filename', 'approval_status', 'template3_id', 'similarity_percentage', 'needs_sme_review', 'sme_review_notes', 'coordinator_notes', 'application_subject_id'],
             },
           ],
         },
@@ -1186,9 +1186,59 @@ async function updateApplication(req, res) {
   }
 }
 
+// Get student profile (for previous study details)
+async function getStudentProfile(req, res) {
+  try {
+    const studentId = req.user.id;
+    if (!studentId || req.user.userType !== 'student') {
+      return res.status(403).json({ error: 'Only students can view their profile' });
+    }
+
+    const student = await models.Student.findByPk(studentId, {
+      include: [
+        {
+          model: models.StudentOldCampus,
+          as: 'oldCampus',
+          attributes: ['old_campus_id', 'old_campus_name'],
+        },
+        {
+          model: models.Program,
+          as: 'program',
+          attributes: ['program_id', 'program_name', 'program_code'],
+        },
+        {
+          model: models.Campus,
+          as: 'campus',
+          attributes: ['campus_id', 'campus_name'],
+        },
+      ],
+      attributes: [
+        'student_id',
+        'student_name',
+        'student_email',
+        'student_phone',
+        'program_id',
+        'campus_id',
+        'old_campus_id',
+        'prev_programme_name',
+      ],
+    });
+
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    res.json({ student });
+  } catch (error) {
+    console.error('Get student profile error:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
   submitApplication,
   getStudentApplications,
+  getStudentProfile,
   getCoordinatorApplications,
   updateApplication,
   reviewSubject,
