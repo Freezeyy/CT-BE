@@ -13,4 +13,8 @@ router.post('/forgot-password', c.user.passwordForgot);
 router.post('/verify-reset-password-token', c.auth.passwordResetTokenValidation);
 router.post('/reset-password', c.auth.passwordReset);
 
+// Maintenance / tools (development or test only)
+router.post('/maintenance/clean-database', c.maintenance.cleanDatabase);
+
 module.exports = router;
+
