@@ -129,10 +129,16 @@ async function getLecturers(req, res) {
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
     const search = req.query.search || '';
+    const campusFilter = req.query.campus_id ? parseInt(req.query.campus_id) : null;
 
     // Build where clause
     const { Op } = require('sequelize');
     const whereClause = isSuperAdmin(req) ? {} : { campus_id: adminCampusId };
+
+    // Optional campus filter (Super Admin only)
+    if (isSuperAdmin(req) && campusFilter) {
+      whereClause.campus_id = campusFilter;
+    }
 
     // Add search filter if provided
     if (search.trim()) {
@@ -406,7 +412,7 @@ async function getCourses(req, res) {
     // Get all courses for this campus (Super Admin sees all campuses)
     const courses = await models.Course.findAll({
       ...(isSuperAdmin(req) ? {} : { where: { campus_id: adminCampusId } }),
-      attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
+      attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'campus_id'],
       // include: [{
       //   model: models.Program,
       //   as: 'programs',
@@ -509,23 +515,32 @@ async function updateLecturerRole(req, res) {
       return res.status(404).json({ error: 'Lecturer not found' });
     }
 
-    // End all existing active roles for this lecturer
-    const endDate = new Date();
-    await models.Coordinator.update(
-      { end_date: endDate },
-      { where: { lecturer_id, end_date: null } }
-    );
-    await models.SubjectMethodExpert.update(
-      { end_date: endDate },
-      { where: { lecturer_id, end_date: null } }
-    );
-    await models.HeadOfSection.update(
-      { end_date: endDate },
-      { where: { lecturer_id, end_date: null } }
-    );
+    // Campus admins can only manage staff within their own campus.
+    // Super Admin can manage any campus.
+    const adminLecturer = await Lecturer.findByPk(req.user.id);
+    if (!adminLecturer?.campus_id) {
+      return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    }
+    const adminCampusId = adminLecturer.campus_id;
+    if (!isSuperAdmin(req) && lecturer.campus_id !== adminCampusId) {
+      return res.status(403).json({ error: 'You can only manage lecturers for your own campus' });
+    }
 
     // If role_type is null or not provided, just end all roles
     if (!role_type) {
+      const endDate = new Date();
+      await models.Coordinator.update(
+        { end_date: endDate },
+        { where: { lecturer_id, end_date: null } }
+      );
+      await models.SubjectMethodExpert.update(
+        { end_date: endDate },
+        { where: { lecturer_id, end_date: null } }
+      );
+      await models.HeadOfSection.update(
+        { end_date: endDate },
+        { where: { lecturer_id, end_date: null } }
+      );
       return res.json({
         message: 'All roles ended successfully',
         lecturer_id,
@@ -549,12 +564,39 @@ async function updateLecturerRole(req, res) {
     const roleStartDate = start_date ? new Date(start_date) : new Date();
     const roleEndDate = end_date ? new Date(end_date) : null;
 
+    // Validate campus alignment for role assignment (prevents cross-campus roles)
+    if (role_type.toLowerCase() === 'coordinator') {
+      const program = await models.Program.findByPk(program_id);
+      if (!program) return res.status(404).json({ error: 'Program not found' });
+      if (program.campus_id !== lecturer.campus_id) {
+        return res.status(400).json({ error: 'Selected program is not in the lecturer’s campus' });
+      }
+    }
+    if (role_type.toLowerCase() === 'sme' || role_type.toLowerCase() === 'subjectmethodexpert') {
+      const course = await models.Course.findByPk(course_id);
+      if (!course) return res.status(404).json({ error: 'Course not found' });
+      if (course.campus_id !== lecturer.campus_id) {
+        return res.status(400).json({ error: 'Selected course is not in the lecturer’s campus' });
+      }
+    }
+
+    // End all existing active roles for this lecturer (only after request is validated)
+    const endDate = new Date();
+    await models.Coordinator.update(
+      { end_date: endDate },
+      { where: { lecturer_id, end_date: null } }
+    );
+    await models.SubjectMethodExpert.update(
+      { end_date: endDate },
+      { where: { lecturer_id, end_date: null } }
+    );
+    await models.HeadOfSection.update(
+      { end_date: endDate },
+      { where: { lecturer_id, end_date: null } }
+    );
+
     switch (role_type.toLowerCase()) {
       case 'coordinator':
-        const program = await models.Program.findByPk(program_id);
-        if (!program) {
-          return res.status(404).json({ error: 'Program not found' });
-        }
         roleAssignment = await models.Coordinator.create({
           lecturer_id,
           program_id,
@@ -566,10 +608,6 @@ async function updateLecturerRole(req, res) {
 
       case 'sme':
       case 'subjectmethodexpert':
-        const course = await models.Course.findByPk(course_id);
-        if (!course) {
-          return res.status(404).json({ error: 'Course not found' });
-        }
         roleAssignment = await models.SubjectMethodExpert.create({
           lecturer_id,
           course_id,

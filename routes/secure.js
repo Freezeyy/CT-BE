@@ -21,14 +21,17 @@ router.get('/admin/courses', m.requireAdmin, c.admin.getCourses);
 router.get('/super-admin/uni-types', m.requireAdmin, c.superAdmin.listUniTypes);
 router.post('/super-admin/uni-types', m.requireAdmin, c.superAdmin.createUniType);
 router.put('/super-admin/uni-types/:uni_type_id', m.requireAdmin, c.superAdmin.updateUniType);
+router.delete('/super-admin/uni-types/:uni_type_id', m.requireAdmin, c.superAdmin.deleteUniType);
 
 router.get('/super-admin/institutions', m.requireAdmin, c.superAdmin.listInstitutions);
 router.post('/super-admin/institutions', m.requireAdmin, c.superAdmin.createInstitution);
 router.put('/super-admin/institutions/:institution_id', m.requireAdmin, c.superAdmin.updateInstitution);
+router.delete('/super-admin/institutions/:institution_id', m.requireAdmin, c.superAdmin.deleteInstitution);
 
 router.get('/super-admin/old-campuses', m.requireAdmin, c.superAdmin.listOldCampuses);
 router.post('/super-admin/old-campuses', m.requireAdmin, c.superAdmin.createOldCampus);
 router.put('/super-admin/old-campuses/:old_campus_id', m.requireAdmin, c.superAdmin.updateOldCampus);
+router.delete('/super-admin/old-campuses/:old_campus_id', m.requireAdmin, c.superAdmin.deleteOldCampus);
 
 // Admin - Staff role management (MUST be before /role route to avoid conflicts)
 router.get('/admin/staff-assignments', m.requireAdmin, c.admin.getStaffAssignments);

@@ -47,6 +47,21 @@ async function updateUniType(req, res) {
   res.json({ uniType });
 }
 
+async function deleteUniType(req, res) {
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Super Admin only' });
+  const { uni_type_id } = req.params;
+  const uniType = await models.UniType.findByPk(uni_type_id);
+  if (!uniType) return res.status(404).json({ error: 'UniType not found' });
+
+  const institutionCount = await models.Institution.count({ where: { uni_type_id: uniType.uni_type_id } });
+  if (institutionCount > 0) {
+    return res.status(409).json({ error: 'Cannot delete UniType with existing Institutions. Deactivate it instead.' });
+  }
+
+  await uniType.destroy();
+  res.json({ message: 'UniType deleted' });
+}
+
 // -----------------------
 // Institutions
 // -----------------------
@@ -94,6 +109,21 @@ async function updateInstitution(req, res) {
     ...(is_active !== undefined ? { is_active: !!is_active } : {}),
   });
   res.json({ institution: inst });
+}
+
+async function deleteInstitution(req, res) {
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Super Admin only' });
+  const { institution_id } = req.params;
+  const inst = await models.Institution.findByPk(institution_id);
+  if (!inst) return res.status(404).json({ error: 'Institution not found' });
+
+  const oldCampusCount = await models.StudentOldCampus.count({ where: { institution_id: inst.institution_id } });
+  if (oldCampusCount > 0) {
+    return res.status(409).json({ error: 'Cannot delete Institution with existing Old Campuses. Deactivate it instead.' });
+  }
+
+  await inst.destroy();
+  res.json({ message: 'Institution deleted' });
 }
 
 // -----------------------
@@ -150,15 +180,34 @@ async function updateOldCampus(req, res) {
   res.json({ oldCampus });
 }
 
+async function deleteOldCampus(req, res) {
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Super Admin only' });
+  const { old_campus_id } = req.params;
+  const oldCampus = await models.StudentOldCampus.findByPk(old_campus_id);
+  if (!oldCampus) return res.status(404).json({ error: 'StudentOldCampus not found' });
+
+  const studentCount = await models.Student.count({ where: { old_campus_id: oldCampus.old_campus_id } });
+  const template3Count = await models.Template3.count({ where: { old_campus_id: oldCampus.old_campus_id } });
+  if (studentCount > 0 || template3Count > 0) {
+    return res.status(409).json({ error: 'Cannot delete Old Campus that is referenced. Deactivate it instead.' });
+  }
+
+  await oldCampus.destroy();
+  res.json({ message: 'Old Campus deleted' });
+}
+
 module.exports = {
   listUniTypes,
   createUniType,
   updateUniType,
+  deleteUniType,
   listInstitutions,
   createInstitution,
   updateInstitution,
+  deleteInstitution,
   listOldCampuses,
   createOldCampus,
   updateOldCampus,
+  deleteOldCampus,
 };
 
