@@ -38,6 +38,7 @@ module.exports = (sequelize, DataTypes) => {
     lecturer_password: DataTypes.STRING,
     lecturer_image: DataTypes.TEXT,
     is_admin: DataTypes.BOOLEAN,
+    is_superadmin: DataTypes.BOOLEAN,
     campus_id: DataTypes.INTEGER,
   }, {
     sequelize,

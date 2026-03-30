@@ -7,6 +7,9 @@ const c = require('../controllers');
 
 router.get('/', c.general.index);
 router.get('/staticdata', c.general.staticdata);
+router.get('/uni-types', c.general.getUniTypes);
+router.get('/institutions', c.general.getInstitutions);
+router.get('/old-campuses', c.general.getOldCampusesByInstitution);
 router.post('/login', c.auth.login);
 router.post('/signup', c.auth.signup);
 router.post('/forgot-password', c.user.passwordForgot);

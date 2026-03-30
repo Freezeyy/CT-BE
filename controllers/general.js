@@ -4,6 +4,55 @@ function index(req, res) {
   res.json({ message: 'Its Alive' });
 }
 
+async function getUniTypes(req, res) {
+  try {
+    const uniTypes = await m.UniType.findAll({
+      where: { is_active: true },
+      attributes: ['uni_type_id', 'uni_type_code', 'uni_type_name'],
+      order: [['uni_type_code', 'ASC']],
+    });
+    res.json({ uniTypes });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+async function getInstitutions(req, res) {
+  try {
+    const uniTypeId = req.query.uni_type_id ? parseInt(req.query.uni_type_id) : null;
+    const where = { is_active: true };
+    if (uniTypeId) where.uni_type_id = uniTypeId;
+
+    const institutions = await m.Institution.findAll({
+      where,
+      attributes: ['institution_id', 'institution_name', 'uni_type_id'],
+      order: [['institution_name', 'ASC']],
+    });
+    res.json({ institutions });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+async function getOldCampusesByInstitution(req, res) {
+  try {
+    const institutionId = req.query.institution_id ? parseInt(req.query.institution_id) : null;
+    if (!institutionId) {
+      return res.status(400).json({ error: 'institution_id is required' });
+    }
+
+    const oldCampuses = await m.StudentOldCampus.findAll({
+      where: { institution_id: institutionId, is_active: true },
+      attributes: ['old_campus_id', 'old_campus_name', 'institution_id'],
+      order: [['old_campus_name', 'ASC']],
+    });
+
+    res.json({ oldCampuses });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
 async function staticdata(req, res) {
   try {
     const data = {};
@@ -54,4 +103,5 @@ async function staticdata(req, res) {
   }
 }
 
-module.exports = { index, staticdata };
+module.exports = { index, staticdata, getUniTypes, getInstitutions, getOldCampusesByInstitution };
+

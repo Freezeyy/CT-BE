@@ -17,6 +17,19 @@ router.get('/admin/students', m.requireAdmin, c.admin.getStudents);
 router.get('/admin/programs', m.requireAdmin, c.admin.getPrograms);
 router.get('/admin/courses', m.requireAdmin, c.admin.getCourses);
 
+// Super Admin routes (admin + super-admin email)
+router.get('/super-admin/uni-types', m.requireAdmin, c.superAdmin.listUniTypes);
+router.post('/super-admin/uni-types', m.requireAdmin, c.superAdmin.createUniType);
+router.put('/super-admin/uni-types/:uni_type_id', m.requireAdmin, c.superAdmin.updateUniType);
+
+router.get('/super-admin/institutions', m.requireAdmin, c.superAdmin.listInstitutions);
+router.post('/super-admin/institutions', m.requireAdmin, c.superAdmin.createInstitution);
+router.put('/super-admin/institutions/:institution_id', m.requireAdmin, c.superAdmin.updateInstitution);
+
+router.get('/super-admin/old-campuses', m.requireAdmin, c.superAdmin.listOldCampuses);
+router.post('/super-admin/old-campuses', m.requireAdmin, c.superAdmin.createOldCampus);
+router.put('/super-admin/old-campuses/:old_campus_id', m.requireAdmin, c.superAdmin.updateOldCampus);
+
 // Admin - Staff role management (MUST be before /role route to avoid conflicts)
 router.get('/admin/staff-assignments', m.requireAdmin, c.admin.getStaffAssignments);
 router.put('/admin/lecturer/:lecturer_id/role', m.requireAdmin, c.admin.updateLecturerRole);

@@ -5,6 +5,11 @@ const {
 module.exports = (sequelize, DataTypes) => {
   class StudentOldCampus extends Model {
     static associate(models) {
+      // StudentOldCampus belongs to Institution (previous institution parent)
+      this.belongsTo(models.Institution, {
+        foreignKey: 'institution_id',
+        as: 'institution',
+      });
       // StudentOldCampus has many Students
       this.hasMany(models.Student, {
         foreignKey: 'old_campus_id',
@@ -29,6 +34,8 @@ module.exports = (sequelize, DataTypes) => {
       autoIncrement: true,
     },
     old_campus_name: DataTypes.STRING,
+    institution_id: DataTypes.INTEGER,
+    is_active: DataTypes.BOOLEAN,
   }, {
     sequelize,
     modelName: 'StudentOldCampus',

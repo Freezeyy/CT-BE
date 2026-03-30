@@ -3,6 +3,12 @@ const models = require('../models');
 const Student = models.Student;
 const Lecturer = models.Lecturer;
 
+function isSuperAdmin(req) {
+  const isAdmin = req.user?.is_admin === true || req.user?.is_admin === 1 || req.user?.is_admin === '1';
+  const isSuper = req.user?.is_superadmin === true || req.user?.is_superadmin === 1 || req.user?.is_superadmin === '1';
+  return req.user?.userType === 'lecturer' && isAdmin && isSuper;
+}
+
 // Create a new lecturer (admin only) - no role assignment during creation
 async function createLecturer(req, res) {
   try {
@@ -41,12 +47,22 @@ async function createLecturer(req, res) {
       });
     }
 
-    // Ensure campus_id matches admin's campus_id
-    const lecturerCampusId = campus_id ? parseInt(campus_id) : adminCampusId;
-    if (lecturerCampusId !== adminCampusId) {
-      return res.status(403).json({
-        error: 'You can only create lecturers for your own campus',
-      });
+    // Campus admins can only create lecturers for their own campus.
+    // Super Admin can create for any campus (must provide campus_id).
+    let lecturerCampusId = adminCampusId;
+    if (isSuperAdmin(req)) {
+      if (!campus_id) {
+        return res.status(400).json({ error: 'campus_id is required for Super Admin' });
+      }
+      lecturerCampusId = parseInt(campus_id);
+    } else {
+      lecturerCampusId = campus_id ? parseInt(campus_id) : adminCampusId;
+      if (lecturerCampusId !== adminCampusId) {
+        return res.status(403).json({
+          error: 'You can only create lecturers for your own campus',
+        });
+      }
+      lecturerCampusId = adminCampusId;
     }
 
     // Check if email already exists
@@ -60,14 +76,14 @@ async function createLecturer(req, res) {
     // Hash password
     const hashpass = bcrypt.hashSync(lecturer_password, bcrypt.genSaltSync());
 
-    // Create lecturer (always use admin's campus_id)
+    // Create lecturer
     const newLecturer = await Lecturer.create({
       lecturer_name,
       lecturer_email,
       lecturer_password: hashpass,
       lecturer_image: lecturer_image || null,
       is_admin: is_admin || false,
-      campus_id: adminCampusId, // Always use admin's campus_id
+      campus_id: lecturerCampusId,
     });
 
     // Return lecturer without password
@@ -116,9 +132,7 @@ async function getLecturers(req, res) {
 
     // Build where clause
     const { Op } = require('sequelize');
-    const whereClause = {
-      campus_id: adminCampusId,
-    };
+    const whereClause = isSuperAdmin(req) ? {} : { campus_id: adminCampusId };
 
     // Add search filter if provided
     if (search.trim()) {
@@ -354,9 +368,9 @@ async function getPrograms(req, res) {
       return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
     }
 
-    // Get all programs for this campus
+    // Get all programs for this campus (Super Admin sees all campuses)
     const programs = await models.Program.findAll({
-      where: { campus_id: adminCampusId },
+      ...(isSuperAdmin(req) ? {} : { where: { campus_id: adminCampusId } }),
       attributes: ['program_id', 'program_name', 'program_code', 'campus_id'],
       order: [['program_code', 'ASC']],
     });
@@ -389,9 +403,9 @@ async function getCourses(req, res) {
       return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
     }
 
-    // Get all courses for this campus with their associated programs
+    // Get all courses for this campus (Super Admin sees all campuses)
     const courses = await models.Course.findAll({
-      where: { campus_id: adminCampusId },
+      ...(isSuperAdmin(req) ? {} : { where: { campus_id: adminCampusId } }),
       attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
       // include: [{
       //   model: models.Program,

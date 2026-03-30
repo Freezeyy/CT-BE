@@ -14,12 +14,27 @@ const Lecturer = models.Lecturer;
 passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField: 'password', passReqToCallback: true },
   async (req, uname, pass, done) => {
     const {
-      name, email, password, phone, program_id, campus_id, old_campus_name, prev_programme_name,
+      name,
+      email,
+      password,
+      phone,
+      program_id,
+      campus_id,
+      uni_type_id,
+      institution_id,
+      old_campus_id,
+      prev_programme_name,
     } = req.body;
     
     // Validate required fields
     if (!name || !email || !password || !program_id || !campus_id) {
       return done(null, false, { message: 'Missing required fields: name, email, password, program_id, and campus_id are required' });
+    }
+    if (!prev_programme_name) {
+      return done(null, false, { message: 'Missing required field: prev_programme_name is required' });
+    }
+    if (!uni_type_id || !institution_id || !old_campus_id) {
+      return done(null, false, { message: 'Missing required fields: uni_type_id, institution_id, and old_campus_id are required' });
     }
     
     // Check if email exists in either Student or Lecturer
@@ -33,21 +48,28 @@ passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField
     const hashpass = bcrypt.hashSync(password, bcrypt.genSaltSync());
     
     try {
-      // Handle old_campus_id - find or create StudentOldCampus
-      let oldCampusId = null;
-      if (old_campus_name) {
-        const StudentOldCampus = models.StudentOldCampus;
-        let oldCampus = await StudentOldCampus.findOne({ 
-          where: { old_campus_name: old_campus_name } 
-        });
-        
-        if (!oldCampus) {
-          // Create new StudentOldCampus if it doesn't exist
-          oldCampus = await StudentOldCampus.create({
-            old_campus_name: old_campus_name,
-          });
-        }
-        oldCampusId = oldCampus.old_campus_id;
+      const resolvedInstitutionId = parseInt(institution_id);
+      const resolvedOldCampusId = parseInt(old_campus_id);
+
+      // Resolve and validate old campus belongs to selected institution
+      const oldCampus = await models.StudentOldCampus.findByPk(resolvedOldCampusId, {
+        attributes: ['old_campus_id', 'institution_id'],
+      });
+      if (!oldCampus) {
+        return done(null, false, { message: 'Invalid old_campus_id' });
+      }
+      if (!oldCampus.institution_id || oldCampus.institution_id !== resolvedInstitutionId) {
+        return done(null, false, { message: 'old_campus_id does not belong to selected institution_id' });
+      }
+
+      const inst = await models.Institution.findByPk(resolvedInstitutionId, {
+        attributes: ['institution_id', 'uni_type_id', 'is_active'],
+      });
+      if (!inst || inst.is_active === false || inst.is_active === 0) {
+        return done(null, false, { message: 'Invalid institution_id' });
+      }
+      if (parseInt(uni_type_id) !== inst.uni_type_id) {
+        return done(null, false, { message: 'uni_type_id does not match the selected institution_id' });
       }
       
       // Only students can signup
@@ -58,8 +80,8 @@ passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField
         student_phone: phone || null,
         program_id: program_id, // Required - program they want to apply for credit transfer
         campus_id: campus_id, // Required - campus they want to transfer credits to
-        old_campus_id: oldCampusId, // Set from registration
-        prev_programme_name: prev_programme_name || null, // Previous programme name from registration
+        old_campus_id: resolvedOldCampusId,
+        prev_programme_name: prev_programme_name || null,
       });
       return done(null, newStudent);
     } catch (error) {
@@ -94,6 +116,7 @@ passport.use('login', new LocalStrategy({ usernameField: 'email', passwordField:
       // Add is_admin flag for lecturers (handle MySQL boolean conversion)
       if (user.lecturer_id) {
         user.is_admin = user.is_admin === true || user.is_admin === 1 || user.is_admin === '1';
+        user.is_superadmin = user.is_superadmin === true || user.is_superadmin === 1 || user.is_superadmin === '1';
       }
       
       return done(null, user, { message: 'Logged in Successfully' });
@@ -117,6 +140,7 @@ passport.use('jwt', new JWTstrategy({
         user.email = user.lecturer_email;
         // Handle MySQL boolean conversion (0/1 to true/false)
         user.is_admin = user.is_admin === true || user.is_admin === 1 || user.is_admin === '1';
+        user.is_superadmin = user.is_superadmin === true || user.is_superadmin === 1 || user.is_superadmin === '1';
         return done(null, user);
       }
     } else {

@@ -16,12 +16,13 @@ async function determineUserRole(user) {
   if (user.userType === 'lecturer') {
     const lecturerId = user.lecturer_id || user.id;
 
-    // 1. Check if admin (highest priority)
-    if (user.is_admin) {
-      return 'Administrator';
-    }
+    // 1. Check if Super Admin (highest priority)
+    if (user.is_superadmin) return 'Super Admin';
 
-    // 2. Check if Head of Section
+    // 2. Check if admin
+    if (user.is_admin) return 'Administrator';
+
+    // 3. Check if Head of Section
     const hos = await models.HeadOfSection.findOne({
       where: {
         lecturer_id: lecturerId,
@@ -32,7 +33,7 @@ async function determineUserRole(user) {
       return 'Head Of Section';
     }
 
-    // 3. Check if Program Coordinator
+    // 4. Check if Program Coordinator
     const coordinator = await models.Coordinator.findOne({
       where: {
         lecturer_id: lecturerId,
@@ -43,7 +44,7 @@ async function determineUserRole(user) {
       return 'Program Coordinator';
     }
 
-    // 4. Check if Subject Method Expert
+    // 5. Check if Subject Method Expert
     const sme = await models.SubjectMethodExpert.findOne({
       where: {
         lecturer_id: lecturerId,
