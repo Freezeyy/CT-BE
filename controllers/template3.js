@@ -186,6 +186,72 @@ async function uploadTemplate3PDF(req, res) {
   }
 }
 
+// Get stored SME evaluation (Subjects Comparison) for a mapping
+async function getTemplate3Evaluation(req, res) {
+  try {
+    const { template3Id } = req.params;
+    if (!template3Id) return res.status(400).json({ error: 'template3Id is required' });
+
+    if (!req.user?.userType || req.user.userType !== 'lecturer') {
+      return res.status(403).json({ error: 'Only lecturers can view SME evaluations' });
+    }
+
+    const template3 = await models.Template3.findByPk(template3Id, {
+      attributes: [
+        'template3_id',
+        'old_subject_code',
+        'old_subject_name',
+        'new_subject_code',
+        'new_subject_name',
+        'similarity_percentage',
+        'sme_review_notes',
+        'topics_comparison',
+        'is_active',
+      ],
+      include: [
+        {
+          model: models.StudentOldCampus,
+          as: 'oldCampus',
+          attributes: ['old_campus_id', 'old_campus_name'],
+          required: false,
+        },
+        {
+          model: models.Program,
+          as: 'program',
+          attributes: ['program_id', 'program_name', 'program_code'],
+          required: false,
+        },
+        {
+          model: models.Course,
+          as: 'course',
+          attributes: ['course_id', 'course_name', 'course_code'],
+          required: false,
+        },
+      ],
+    });
+
+    if (!template3) return res.status(404).json({ error: 'Template3 mapping not found' });
+
+    let topics = null;
+    if (template3.topics_comparison) {
+      try {
+        topics = JSON.parse(template3.topics_comparison);
+      } catch (e) {
+        topics = null;
+      }
+    }
+
+    res.json({
+      template3: {
+        ...template3.toJSON(),
+        topics_comparison: topics,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
 // Create single Template3 entry
 async function createTemplate3Entry(req, res) {
   try {
@@ -431,6 +497,7 @@ async function updateTemplate3Entry(req, res) {
 
 module.exports = {
   getTemplate3Mappings,
+  getTemplate3Evaluation,
   uploadTemplate3PDF,
   createTemplate3Entry,
   bulkCreateTemplate3,

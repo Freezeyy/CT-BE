@@ -49,6 +49,8 @@ module.exports = (sequelize, DataTypes) => {
     new_subject_name: DataTypes.STRING,
     new_subject_credit: DataTypes.INTEGER,
     similarity_percentage: DataTypes.INTEGER,
+    sme_review_notes: DataTypes.TEXT,
+    topics_comparison: DataTypes.TEXT, // JSON string from SME evaluation
     template3_pdf_path: DataTypes.TEXT,
     is_active: DataTypes.BOOLEAN,
     replaced_by_template3_id: DataTypes.INTEGER,

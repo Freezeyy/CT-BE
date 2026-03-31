@@ -196,6 +196,63 @@ async function deleteOldCampus(req, res) {
   res.json({ message: 'Old Campus deleted' });
 }
 
+// -----------------------
+// Campuses (UniKL campuses)
+// -----------------------
+async function listCampuses(req, res) {
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Super Admin only' });
+  const campuses = await models.Campus.findAll({
+    attributes: ['campus_id', 'campus_name'],
+    order: [['campus_name', 'ASC']],
+  });
+  res.json({ campuses });
+}
+
+async function createCampus(req, res) {
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Super Admin only' });
+  const { campus_name } = req.body;
+  if (!campus_name) return res.status(400).json({ error: 'campus_name is required' });
+
+  const campus = await models.Campus.create({ campus_name: String(campus_name).trim() });
+  res.status(201).json({ campus });
+}
+
+async function updateCampus(req, res) {
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Super Admin only' });
+  const { campus_id } = req.params;
+  const campus = await models.Campus.findByPk(campus_id);
+  if (!campus) return res.status(404).json({ error: 'Campus not found' });
+
+  const { campus_name } = req.body;
+  if (campus_name !== undefined) {
+    await campus.update({ campus_name: String(campus_name).trim() });
+  }
+  res.json({ campus });
+}
+
+async function deleteCampus(req, res) {
+  if (!isSuperAdmin(req)) return res.status(403).json({ error: 'Super Admin only' });
+  const { campus_id } = req.params;
+  const campus = await models.Campus.findByPk(campus_id);
+  if (!campus) return res.status(404).json({ error: 'Campus not found' });
+
+  const [lecturerCount, programCount, courseCount] = await Promise.all([
+    models.Lecturer.count({ where: { campus_id: campus.campus_id } }),
+    models.Program.count({ where: { campus_id: campus.campus_id } }),
+    models.Course.count({ where: { campus_id: campus.campus_id } }),
+  ]);
+
+  if (lecturerCount > 0 || programCount > 0 || courseCount > 0) {
+    return res.status(409).json({
+      error: 'Cannot delete campus: campus is in use',
+      details: { lecturerCount, programCount, courseCount },
+    });
+  }
+
+  await campus.destroy();
+  res.json({ message: 'Campus deleted' });
+}
+
 module.exports = {
   listUniTypes,
   createUniType,
@@ -209,5 +266,10 @@ module.exports = {
   createOldCampus,
   updateOldCampus,
   deleteOldCampus,
+  // Campuses
+  listCampuses,
+  createCampus,
+  updateCampus,
+  deleteCampus,
 };
 

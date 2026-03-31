@@ -382,6 +382,8 @@ async function reviewSubject(req, res) {
               new_subject_code: sme.course.course_code,
               new_subject_name: sme.course.course_name,
               similarity_percentage,
+              sme_review_notes: sme_review_notes || null,
+              topics_comparison: topics_comparison ? JSON.stringify(topics_comparison) : null,
               is_active: true,
             });
 
@@ -391,6 +393,14 @@ async function reviewSubject(req, res) {
             });
           } else {
             template3 = existingTemplate3;
+            // Backfill evaluation data if missing (keep first stored evaluation)
+            const shouldUpdateEval = (!template3.topics_comparison && topics_comparison) || (!template3.sme_review_notes && sme_review_notes);
+            if (shouldUpdateEval) {
+              await template3.update({
+                ...(template3.sme_review_notes ? {} : { sme_review_notes: sme_review_notes || null }),
+                ...(template3.topics_comparison ? {} : { topics_comparison: topics_comparison ? JSON.stringify(topics_comparison) : null }),
+              });
+            }
             await pastSubject.update({
               template3_id: existingTemplate3.template3_id,
             });

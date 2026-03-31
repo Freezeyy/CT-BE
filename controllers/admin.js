@@ -378,10 +378,159 @@ async function getPrograms(req, res) {
     const programs = await models.Program.findAll({
       ...(isSuperAdmin(req) ? {} : { where: { campus_id: adminCampusId } }),
       attributes: ['program_id', 'program_name', 'program_code', 'campus_id'],
+      include: [{
+        model: models.Campus,
+        as: 'campus',
+        attributes: ['campus_name'],
+      }],
       order: [['program_code', 'ASC']],
     });
 
     res.json({ programs });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Create a program (admin only; campus admins only for own campus)
+async function createProgram(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    const userType = req.user.userType;
+
+    if (userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can create programs' });
+    }
+
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer?.campus_id) {
+      return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    }
+
+    const adminCampusId = adminLecturer.campus_id;
+    const { program_name, program_code, campus_id, program_structure } = req.body;
+
+    if (!program_name || !program_code) {
+      return res.status(400).json({ error: 'program_name and program_code are required' });
+    }
+
+    let programCampusId = adminCampusId;
+    if (isSuperAdmin(req)) {
+      if (!campus_id) {
+        return res.status(400).json({ error: 'campus_id is required for Super Admin' });
+      }
+      programCampusId = parseInt(campus_id);
+    } else if (campus_id && parseInt(campus_id) !== adminCampusId) {
+      return res.status(403).json({ error: 'You can only create programs for your own campus' });
+    }
+
+    const campus = await models.Campus.findByPk(programCampusId);
+    if (!campus) {
+      return res.status(404).json({ error: 'Campus not found' });
+    }
+
+    const program = await models.Program.create({
+      program_name: String(program_name).trim(),
+      program_code: String(program_code).trim(),
+      program_structure: program_structure ?? null,
+      campus_id: programCampusId,
+    });
+
+    res.status(201).json({ program });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Update a program (admin only; campus admins only for own campus)
+async function updateProgram(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    const userType = req.user.userType;
+
+    if (userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can update programs' });
+    }
+
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer?.campus_id) {
+      return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    }
+    const adminCampusId = adminLecturer.campus_id;
+
+    const { program_id } = req.params;
+    const program = await models.Program.findByPk(program_id);
+    if (!program) return res.status(404).json({ error: 'Program not found' });
+
+    if (!isSuperAdmin(req) && program.campus_id !== adminCampusId) {
+      return res.status(403).json({ error: 'You can only update programs for your own campus' });
+    }
+
+    const { program_name, program_code, program_structure, campus_id } = req.body;
+
+    if (!isSuperAdmin(req) && campus_id && parseInt(campus_id) !== adminCampusId) {
+      return res.status(403).json({ error: 'You cannot change program campus' });
+    }
+
+    if (isSuperAdmin(req) && campus_id) {
+      const newCampusId = parseInt(campus_id);
+      const campus = await models.Campus.findByPk(newCampusId);
+      if (!campus) return res.status(404).json({ error: 'Campus not found' });
+      program.campus_id = newCampusId;
+    }
+
+    if (program_name !== undefined) program.program_name = String(program_name).trim();
+    if (program_code !== undefined) program.program_code = String(program_code).trim();
+    if (program_structure !== undefined) program.program_structure = program_structure ?? null;
+
+    await program.save();
+    res.json({ program });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Delete a program (admin only; campus admins only for own campus)
+async function deleteProgram(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    const userType = req.user.userType;
+
+    if (userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can delete programs' });
+    }
+
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer?.campus_id) {
+      return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    }
+    const adminCampusId = adminLecturer.campus_id;
+
+    const { program_id } = req.params;
+    const program = await models.Program.findByPk(program_id);
+    if (!program) return res.status(404).json({ error: 'Program not found' });
+
+    if (!isSuperAdmin(req) && program.campus_id !== adminCampusId) {
+      return res.status(403).json({ error: 'You can only delete programs for your own campus' });
+    }
+
+    // Prevent delete if program is referenced
+    const [studentCount, appCount, coordinatorCount, programCourseCount] = await Promise.all([
+      models.Student.count({ where: { program_id: program.program_id } }),
+      models.CreditTransferApplication.count({ where: { program_id: program.program_id } }),
+      models.Coordinator.count({ where: { program_id: program.program_id, end_date: null } }),
+      models.ProgramCourse.count({ where: { program_id: program.program_id } }),
+    ]);
+
+    if (studentCount > 0 || appCount > 0 || coordinatorCount > 0 || programCourseCount > 0) {
+      return res.status(409).json({
+        error: 'Cannot delete program: program is in use',
+        details: { studentCount, appCount, coordinatorCount, programCourseCount },
+      });
+    }
+
+    await program.destroy();
+    res.json({ message: 'Program deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -709,6 +858,9 @@ module.exports = {
   getLecturers,
   getStudents,
   getPrograms,
+  createProgram,
+  updateProgram,
+  deleteProgram,
   getCourses,
   updateLecturerRole,
   getStaffAssignments,
