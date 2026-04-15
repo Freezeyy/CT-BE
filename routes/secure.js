@@ -7,6 +7,16 @@ const m = require('../middleware');
 router.get('/role', c.role.index);
 router.get('/activitylog', m.requireAdminOrUser, c.activitylog.index);
 
+// Notifications (all authenticated users)
+router.get('/notifications', m.requireAdminOrUser, c.notification.listMyNotifications);
+router.get('/notifications/unread-count', m.requireAdminOrUser, c.notification.getMyUnreadCount);
+router.post('/notifications/mark-read', m.requireAdminOrUser, c.notification.markRead);
+
+// Process window settings
+router.get('/process-window/me', m.requireAdminOrUser, c.processWindow.getMyProcessWindow);
+router.get('/admin/process-window', m.requireAdmin, c.processWindow.getProcessWindow);
+router.post('/admin/process-window', m.requireAdmin, c.processWindow.upsertProcessWindow);
+
 router.get('/users', m.requireAdmin, c.user.index);
 router.post('/user/:UserId', c.userUpdate.update);
 
@@ -57,6 +67,7 @@ router.get('/lecturer/profile', m.requireAdminOrUser, c.profile.getLecturerProfi
 router.get('/credit-transfer/coordinator/applications', m.requireAdminOrUser, c.creditTransfer.getCoordinatorApplications);
 router.post('/credit-transfer/coordinator/review-subject', m.requireAdminOrUser, c.creditTransfer.reviewSubject);
 router.post('/credit-transfer/coordinator/check-current-subject', m.requireAdminOrUser, c.creditTransfer.checkTemplate3ForCurrentSubject);
+router.post('/credit-transfer/coordinator/send-to-hos', m.requireAdminOrUser, c.creditTransfer.sendApprovedSubjectsToHos);
 router.get('/credit-transfer/coordinator/smes/:course_id', m.requireAdminOrUser, c.creditTransfer.getSMEsForCourse);
 router.put('/credit-transfer/application/:applicationId', m.requireAdminOrUser, c.creditTransfer.updateApplication);
 
@@ -65,6 +76,11 @@ router.get('/credit-transfer/sme/assignments', m.requireAdminOrUser, c.sme.getSM
 router.get('/credit-transfer/sme/subject/:applicationSubjectId', m.requireAdminOrUser, c.sme.getSubjectDetails);
 router.post('/credit-transfer/sme/review-subject/:applicationSubjectId', m.requireAdminOrUser, c.sme.reviewSubject);
 router.get('/credit-transfer/sme/syllabus/:filename', m.requireAdminOrUser, c.sme.getSyllabusFile);
+
+// HOS routes
+router.get('/hos/reviews', m.requireAdminOrUser, c.hos.listMyHosReviews);
+router.get('/hos/reviews/:hosReviewId', m.requireAdminOrUser, c.hos.getHosReviewDetail);
+router.post('/hos/reviews/:hosReviewId/decide', m.requireAdminOrUser, c.hos.decideHosReview);
 
 // Program routes
 // GET /api/program/structure - Get program structure (and optionally courses with ?includeCourses=true)

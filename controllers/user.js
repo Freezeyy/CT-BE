@@ -49,28 +49,50 @@ function getDetails(req, res) {
   }
 }
 
-function passwordForgot(req, res) {
-  m.User.findOne({ where: { email: req.body.email } })
-    .then(async (user) => {
-      if (!user) {
-        res.status(404).send({ data: 'user not found' });
-        return;
+async function passwordForgot(req, res) {
+  try {
+    const { email, redirect_url } = req.body || {};
+    if (!email || !redirect_url) {
+      return res.status(400).send({ error: 'email and redirect_url are required' });
+    }
+
+    // Find user by email across Lecturer + Student (current auth tables)
+    let user = await m.Lecturer.findOne({ where: { lecturer_email: email } });
+    if (user) {
+      user.userType = 'lecturer';
+      user.id = user.lecturer_id;
+      user.email = user.lecturer_email;
+      user.name = user.lecturer_name;
+    } else {
+      user = await m.Student.findOne({ where: { student_email: email } });
+      if (user) {
+        user.userType = 'student';
+        user.id = user.student_id;
+        user.email = user.student_email;
+        user.name = user.student_name;
       }
+    }
 
-      const today_crypt = encoderBase64(moment().unix() + 86400000);
-      const content = {
-        uid: encoderBase64(user.id),
-        token: today_crypt,
-      };
+    if (!user) return res.status(404).send({ data: 'user not found' });
 
-      const token = jwt.sign(content, process.env.PROJECT_JWT_SECRET);
-      await user.update({ reset_token: token });
-      const url = `${removeTrailingSymbolFromUrl(req.body.redirect_url)}?token=${token}`;
+    // Token expires via embedded unix timestamp check in passport-loader forgotpasswordjwt
+    const today_crypt = encoderBase64(moment().unix() + 86400000);
+    const content = {
+      uid: encoderBase64(user.id),
+      token: today_crypt,
+      userType: user.userType,
+    };
 
-      svc.sendMailForgotPassword(url, user);
-      res.send({ data: 'successfuly request for password reset' });
-    })
-    .catch((e) => res.status(500).send({ error: e }));
+    const token = jwt.sign(content, process.env.PROJECT_JWT_SECRET);
+    await user.update({ reset_token: token });
+
+    const url = `${removeTrailingSymbolFromUrl(redirect_url)}?token=${token}`;
+    await svc.sendMailForgotPassword(url, user);
+
+    return res.send({ data: 'successfuly request for password reset' });
+  } catch (e) {
+    return res.status(500).send({ error: e?.message || e });
+  }
 }
 
 function verifyUser(req, res) {

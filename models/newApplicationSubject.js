@@ -30,6 +30,11 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'application_subject_id',
         as: 'pastSyllabusApprovals',
       });
+      // NewApplicationSubject has many HosReviews
+      this.hasMany(models.HosReview, {
+        foreignKey: 'application_subject_id',
+        as: 'hosReviews',
+      });
     }
   }
   NewApplicationSubject.init({

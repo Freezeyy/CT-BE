@@ -18,6 +18,11 @@ module.exports = (sequelize, DataTypes) => {
     noti_type: DataTypes.STRING,
     noti_title: DataTypes.STRING,
     noti_message: DataTypes.TEXT,
+    noti_receiver_type: DataTypes.STRING, // student | lecturer
+    noti_receiver_id: DataTypes.INTEGER,
+    is_read: DataTypes.BOOLEAN,
+    read_at: DataTypes.DATE,
+    link_path: DataTypes.STRING,
   }, {
     sequelize,
     modelName: 'Notification',

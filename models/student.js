@@ -42,6 +42,7 @@ module.exports = (sequelize, DataTypes) => {
     student_email: DataTypes.STRING,
     student_password: DataTypes.STRING,
     student_phone: DataTypes.STRING,
+    reset_token: DataTypes.TEXT,
     program_id: DataTypes.INTEGER,
     campus_id: DataTypes.INTEGER,
     old_campus_id: DataTypes.INTEGER,

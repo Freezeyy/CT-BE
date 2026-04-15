@@ -40,6 +40,7 @@ module.exports = (sequelize, DataTypes) => {
     is_admin: DataTypes.BOOLEAN,
     is_superadmin: DataTypes.BOOLEAN,
     campus_id: DataTypes.INTEGER,
+    reset_token: DataTypes.TEXT,
   }, {
     sequelize,
     modelName: 'Lecturer',

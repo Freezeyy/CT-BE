@@ -1,4 +1,23 @@
 const models = require('../models');
+const svc = require('../services');
+
+async function createNotification({ receiver_type, receiver_id, noti_type, noti_title, noti_message, link_path = null }) {
+  try {
+    if (!receiver_type || !receiver_id) return;
+    await models.Notification.create({
+      noti_receiver_type: receiver_type,
+      noti_receiver_id: receiver_id,
+      noti_type,
+      noti_title,
+      noti_message,
+      link_path,
+      is_read: false,
+      read_at: null,
+    });
+  } catch (e) {
+    console.warn('Notification create failed:', e?.message || e);
+  }
+}
 
 // Get available coordinators for student's campus
 async function getAvailableCoordinators(req, res) {
@@ -66,6 +85,12 @@ async function createAppointment(req, res) {
       return res.status(404).json({ error: 'Student not found' });
     }
 
+    // Enforce CT process window
+    const ctOpen = await svc.processWindow.isCtProcessOpenForCampus(student.campus_id);
+    if (!ctOpen) {
+      return res.status(403).json({ error: 'Credit transfer process window is closed for your campus.' });
+    }
+
     // Verify coordinator exists and is from the same campus
     const coordinator = await models.Coordinator.findOne({
       where: {
@@ -98,6 +123,18 @@ async function createAppointment(req, res) {
       appointment_end: appointment_end ? new Date(appointment_end) : null,
       student_id: studentId,
       coordinator_id,
+    });
+
+    // Notify coordinator about new appointment
+    const coordLecturerId = coordinator.lecturer?.lecturer_id || coordinator.lecturer_id;
+    const studentName = student.student_name || 'A student';
+    await createNotification({
+      receiver_type: 'lecturer',
+      receiver_id: coordLecturerId,
+      noti_type: 'appointment_scheduled',
+      noti_title: 'New appointment booked',
+      noti_message: `${studentName} booked an appointment with you.`,
+      link_path: '/coordinator/appointment',
     });
 
     res.status(201).json({

@@ -35,6 +35,7 @@ module.exports = (sequelize, DataTypes) => {
     pastSubject_syllabus_path: DataTypes.TEXT,
     original_filename: DataTypes.STRING,
     approval_status: DataTypes.STRING, // pending, approved_template3, approved_sme, rejected, needs_sme_review
+    sme_decision_status: DataTypes.STRING, // approved_sme | rejected (preserved even after HOS stage)
     template3_id: DataTypes.INTEGER,
     similarity_percentage: DataTypes.INTEGER,
     needs_sme_review: DataTypes.BOOLEAN,

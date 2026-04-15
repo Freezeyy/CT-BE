@@ -308,11 +308,11 @@ async function assignSubjectMethodExpert(req, res) {
 // Assign lecturer as Head of Section
 async function assignHeadOfSection(req, res) {
   try {
-    const { lecturer_id, start_date, end_date } = req.body;
+    const { lecturer_id, program_id, start_date, end_date } = req.body;
 
-    if (!lecturer_id) {
+    if (!lecturer_id || !program_id) {
       return res.status(400).json({
-        error: 'Missing required field: lecturer_id is required',
+        error: 'Missing required fields: lecturer_id and program_id are required',
       });
     }
 
@@ -322,23 +322,29 @@ async function assignHeadOfSection(req, res) {
       return res.status(404).json({ error: 'Lecturer not found' });
     }
 
-    // Check if HOS already exists for this lecturer
+    // Verify program exists
+    const program = await models.Program.findByPk(program_id);
+    if (!program) {
+      return res.status(404).json({ error: 'Program not found' });
+    }
+
+    // Check if HOS already exists for this lecturer + program
     const existingHOS = await models.HeadOfSection.findOne({
       where: {
         lecturer_id,
+        program_id,
         end_date: null, // Active HOS
       },
     });
 
     if (existingHOS) {
-      return res.status(409).json({
-        error: 'This lecturer is already a Head of Section',
-      });
+      return res.status(409).json({ error: 'This lecturer is already a Head of Section for this program' });
     }
 
     // Create HOS assignment
     const hos = await models.HeadOfSection.create({
       lecturer_id,
+      program_id,
       start_date: start_date ? new Date(start_date) : new Date(),
       end_date: end_date ? new Date(end_date) : null,
     });
@@ -374,9 +380,15 @@ async function getPrograms(req, res) {
       return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
     }
 
+    // Optional campus filter (Super Admin only)
+    const campusFilter = req.query.campus_id ? parseInt(req.query.campus_id) : null;
+    const whereClause = isSuperAdmin(req)
+      ? (campusFilter ? { campus_id: campusFilter } : {})
+      : { campus_id: adminCampusId };
+
     // Get all programs for this campus (Super Admin sees all campuses)
     const programs = await models.Program.findAll({
-      ...(isSuperAdmin(req) ? {} : { where: { campus_id: adminCampusId } }),
+      where: whereClause,
       attributes: ['program_id', 'program_name', 'program_code', 'campus_id'],
       include: [{
         model: models.Campus,
@@ -621,6 +633,12 @@ async function getStaffAssignments(req, res) {
           as: 'lecturer',
           attributes: ['lecturer_id', 'lecturer_name', 'lecturer_email'],
         },
+        {
+          model: models.Program,
+          as: 'program',
+          attributes: ['program_id', 'program_name', 'program_code'],
+          required: false,
+        },
       ],
     });
 
@@ -768,8 +786,12 @@ async function updateLecturerRole(req, res) {
 
       case 'hos':
       case 'headofsection':
+        if (!program_id) {
+          return res.status(400).json({ error: 'program_id is required for HOS role' });
+        }
         roleAssignment = await models.HeadOfSection.create({
           lecturer_id,
+          program_id,
           start_date: roleStartDate,
           end_date: roleEndDate,
         });

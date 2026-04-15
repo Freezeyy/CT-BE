@@ -63,7 +63,8 @@ module.exports = {
         student_phone: '+60149718736',
         program_id: 1, // BIMD
         campus_id: 1, // Main Campus
-        old_campus_id: null,
+        old_campus_id: 1,
+        prev_programme_name: 'Diploma in Software Engineering',
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -73,9 +74,10 @@ module.exports = {
         student_email: 'qila@university.edu',
         student_password: hashpass3,
         student_phone: '+60149718736',
-        program_id: 2, // BIMD
+        program_id: 1, // BIMD
         campus_id: 1, // Main Campus
         old_campus_id: 1,
+        prev_programme_name: 'Diploma in Software Engineering',
         createdAt: new Date(),
         updatedAt: new Date(),
       },

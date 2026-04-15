@@ -43,6 +43,10 @@ module.exports = (sequelize, DataTypes) => {
     application_subject_id: DataTypes.INTEGER,
     pastSubject_id: DataTypes.INTEGER,
     old_campus_id: DataTypes.INTEGER,
+    assigned_at: DataTypes.DATE,
+    due_at: DataTypes.DATE,
+    completed_at: DataTypes.DATE,
+    assignment_status: DataTypes.STRING,
   }, {
     sequelize,
     modelName: 'SMEAssignment',

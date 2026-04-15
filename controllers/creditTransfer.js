@@ -3,6 +3,186 @@ const { Op, Sequelize } = require('sequelize');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const svc = require('../services');
+
+async function createNotification({ receiver_type, receiver_id, noti_type, noti_title, noti_message, link_path = null }) {
+  try {
+    if (!receiver_type || !receiver_id) return;
+    await models.Notification.create({
+      noti_receiver_type: receiver_type,
+      noti_receiver_id: receiver_id,
+      noti_type,
+      noti_title,
+      noti_message,
+      link_path,
+      is_read: false,
+      read_at: null,
+    });
+  } catch (e) {
+    // Don't fail business flow due to notification issues
+    console.warn('Notification create failed:', e?.message || e);
+  }
+}
+
+async function findActiveTemplate3Match({
+  oldCampusId,
+  oldProgrammeName,
+  programId,
+  courseId,
+  oldSubjectCode,
+}) {
+  const env = process.env.NODE_ENV || 'development';
+  const config = require('../config/config')[env];
+  const isPostgres = config.dialect === 'postgres';
+
+  const whereAnd = [
+    { old_campus_id: oldCampusId },
+    { program_id: programId },
+    { course_id: courseId },
+    { old_subject_code: oldSubjectCode },
+    { is_active: true },
+  ];
+
+  if (oldProgrammeName) {
+    if (isPostgres) {
+      whereAnd.push({ old_programme_name: { [Op.iLike]: `%${oldProgrammeName}%` } });
+    } else {
+      whereAnd.push(
+        Sequelize.where(
+          Sequelize.fn('LOWER', Sequelize.col('old_programme_name')),
+          { [Op.like]: `%${String(oldProgrammeName).toLowerCase()}%` }
+        )
+      );
+    }
+  }
+
+  return await models.Template3.findOne({
+    where: { [Op.and]: whereAnd },
+    attributes: ['template3_id', 'similarity_percentage', 'course_id'],
+  });
+}
+
+function daysToMs(days) {
+  return Math.max(0, Number(days) || 0) * 24 * 60 * 60 * 1000;
+}
+
+function getSmeEvalDays() {
+  return Number(process.env.SME_EVAL_DAYS || 14);
+}
+
+function getProcessWindowDays() {
+  return Number(process.env.CTS_PROCESS_WINDOW_DAYS || 60);
+}
+
+async function hasRecentSmeAssignmentForMapping({
+  oldCampusId,
+  oldProgrammeName,
+  programId,
+  courseId,
+  oldSubjectCode,
+}) {
+  const since = new Date(Date.now() - daysToMs(getProcessWindowDays()));
+
+  // Find any SMEAssignment created recently for the same mapping key.
+  // Key is derived from: old_campus_id + old_programme_name + program_id + course_id + old_subject_code
+  const found = await models.SMEAssignment.findOne({
+    where: {
+      old_campus_id: oldCampusId,
+      createdAt: { [Op.gte]: since },
+    },
+    include: [
+      {
+        model: models.PastApplicationSubject,
+        as: 'pastApplicationSubject',
+        required: true,
+        attributes: ['pastSubject_id', 'pastSubject_code'],
+        where: { pastSubject_code: oldSubjectCode },
+        include: [{
+          model: models.NewApplicationSubject,
+          as: 'newApplicationSubject',
+          required: true,
+          attributes: ['application_subject_id', 'course_id', 'ct_id'],
+          where: { course_id: courseId },
+          include: [{
+            model: models.CreditTransferApplication,
+            as: 'creditTransferApplication',
+            required: true,
+            attributes: ['ct_id', 'program_id', 'prev_programme_name', 'createdAt'],
+            where: { program_id: programId },
+          }],
+        }],
+      },
+    ],
+  });
+
+  if (!found) return false;
+  const prevName = found.pastApplicationSubject?.newApplicationSubject?.creditTransferApplication?.prev_programme_name || '';
+  return String(prevName).toLowerCase().includes(String(oldProgrammeName || '').toLowerCase());
+}
+
+async function markSimilarMappingsAsSmeEvaluating({
+  oldCampusId,
+  oldProgrammeName,
+  programId,
+  courseId,
+  oldSubjectCode,
+  coordinatorNotes,
+}) {
+  // Find other pending rows with same mapping key and mark them as "awaiting SME".
+  // IMPORTANT: some students may not have Student.old_campus_id set; in that case we match using
+  // application.prev_campus_name (string) instead of Student.old_campus_id.
+  const apps = await models.CreditTransferApplication.findAll({
+    where: {
+      program_id: programId,
+      prev_programme_name: { [Op.like]: `%${oldProgrammeName || ''}%` },
+      // oldCampusId is derived from prev_campus_name lookup; match the same campus name string too
+      prev_campus_name: { [Op.like]: `%${(await models.StudentOldCampus.findByPk(oldCampusId, { attributes: ['old_campus_name'] }))?.old_campus_name || ''}%` },
+    },
+    attributes: ['ct_id'],
+    include: [
+      {
+        model: models.NewApplicationSubject,
+        as: 'newApplicationSubjects',
+        attributes: ['application_subject_id', 'course_id'],
+        required: true,
+        where: { course_id: courseId },
+        include: [
+          {
+            model: models.PastApplicationSubject,
+            as: 'pastApplicationSubjects',
+            required: true,
+            where: {
+              pastSubject_code: oldSubjectCode,
+              approval_status: 'pending',
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  const pastIds = [];
+  for (const app of apps) {
+    for (const ns of app.newApplicationSubjects || []) {
+      for (const ps of ns.pastApplicationSubjects || []) {
+        pastIds.push(ps.pastSubject_id);
+      }
+    }
+  }
+
+  if (pastIds.length === 0) return 0;
+
+  const [updated] = await models.PastApplicationSubject.update(
+    {
+      approval_status: 'needs_sme_review',
+      needs_sme_review: true,
+      coordinator_notes: coordinatorNotes || 'An SME is currently evaluating the same mapping',
+    },
+    { where: { pastSubject_id: { [Op.in]: pastIds } } }
+  );
+
+  return updated;
+}
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -188,6 +368,14 @@ async function submitApplication(req, res) {
     const studentId = req.user.id;
     if (!studentId || req.user.userType !== 'student') {
       return res.status(403).json({ error: 'Only students can submit applications' });
+    }
+
+    // Enforce CT process window (per student's UniKL campus)
+    const studentCampus = await models.Student.findByPk(studentId, { attributes: ['campus_id'] });
+    const campusIdForWindow = studentCampus?.campus_id;
+    const ctOpen = await svc.processWindow.isCtProcessOpenForCampus(campusIdForWindow);
+    if (!ctOpen) {
+      return res.status(403).json({ error: 'Credit transfer process window is closed for your campus.' });
     }
 
     // Get program by code
@@ -396,6 +584,63 @@ async function submitApplication(req, res) {
       await processMappings(application, mappingsArray, files, isDraft);
     }
 
+    // If this application is submitted, and an SME is already evaluating the same mapping (within window),
+    // mark the newly created pending rows as needs_sme_review so coordinator UI shows "SME is evaluating".
+    if (!isDraft) {
+      try {
+        const student = await models.Student.findByPk(studentId, { attributes: ['old_campus_id'] });
+        const oldCampusId = student?.old_campus_id || null;
+        if (oldCampusId && application.prev_programme_name) {
+          const subjects = await models.NewApplicationSubject.findAll({
+            where: { ct_id: application.ct_id },
+            include: [{ model: models.PastApplicationSubject, as: 'pastApplicationSubjects', required: false }],
+          });
+          for (const s of subjects) {
+            const courseId = s.course_id;
+            if (!courseId) continue;
+            for (const ps of s.pastApplicationSubjects || []) {
+              if (ps.approval_status !== 'pending') continue;
+              const hasRecent = await hasRecentSmeAssignmentForMapping({
+                oldCampusId,
+                oldProgrammeName: application.prev_programme_name,
+                programId: application.program_id,
+                courseId,
+                oldSubjectCode: ps.pastSubject_code,
+              });
+              if (hasRecent) {
+                await ps.update({
+                  approval_status: 'needs_sme_review',
+                  needs_sme_review: true,
+                  coordinator_notes: 'An SME is currently evaluating the same mapping',
+                });
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to auto-mark SME evaluating for new application:', e?.message || e);
+      }
+    }
+
+    // Notify coordinator when an application is submitted (not draft)
+    if (!isDraft) {
+      const student = await models.Student.findByPk(studentId, { attributes: ['student_name'] });
+      const coordinatorLecturer = await models.Lecturer.findByPk(coordinator.lecturer_id, {
+        attributes: ['lecturer_id', 'lecturer_name'],
+      });
+      const studentName = student?.student_name || 'A student';
+      const coordinatorLecturerId = coordinatorLecturer?.lecturer_id || coordinator.lecturer_id;
+
+      await createNotification({
+        receiver_type: 'lecturer',
+        receiver_id: coordinatorLecturerId,
+        noti_type: 'application_submitted',
+        noti_title: 'New credit transfer application',
+        noti_message: `${studentName} submitted a credit transfer application for your review.`,
+        link_path: '/coordinator/application',
+      });
+    }
+
     res.status(draftId ? 200 : 201).json({
       message: isDraft 
         ? 'Draft saved successfully' 
@@ -443,6 +688,12 @@ async function getStudentApplications(req, res) {
               model: models.Course,
               as: 'course',
               attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
+            },
+            {
+              model: models.HosReview,
+              as: 'hosReviews',
+              attributes: ['hos_review_id', 'status', 'createdAt', 'decided_at'],
+              required: false,
             },
             {
               model: models.PastApplicationSubject,
@@ -521,6 +772,13 @@ async function getCoordinatorApplications(req, res) {
               attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
             },
             {
+              model: models.HosReview,
+              as: 'hosReviews',
+              attributes: ['hos_review_id', 'status', 'createdAt'],
+              required: false,
+              where: { status: 'pending' },
+            },
+            {
               model: models.PastApplicationSubject,
               as: 'pastApplicationSubjects',
               attributes: ['pastSubject_id', 'pastSubject_code', 'pastSubject_name', 'pastSubject_grade', 'pastSubject_credit', 'pastSubject_syllabus_path', 'original_filename', 'approval_status', 'template3_id', 'similarity_percentage', 'needs_sme_review', 'sme_review_notes', 'coordinator_notes', 'application_subject_id'],
@@ -543,6 +801,13 @@ async function reviewSubject(req, res) {
     const lecturerId = req.user.id;
     if (!lecturerId || req.user.userType !== 'lecturer') {
       return res.status(403).json({ error: 'Only lecturers can review subjects' });
+    }
+
+    // Enforce CT process window (lecturer campus)
+    const lecturer = await models.Lecturer.findByPk(lecturerId, { attributes: ['campus_id'] });
+    const ctOpen = await svc.processWindow.isCtProcessOpenForCampus(lecturer?.campus_id);
+    if (!ctOpen) {
+      return res.status(403).json({ error: 'Credit transfer process window is closed for your campus.' });
     }
 
     // Get coordinator
@@ -725,6 +990,21 @@ async function reviewSubject(req, res) {
         return res.status(400).json({ error: 'Cannot determine course for SME assignment. Please ensure the application subject has a valid course_id.' });
       }
 
+      // Avoid duplicate SME assignments within the process window (e.g. 60 days).
+      // Template3 may exist, but we still allow SME re-evaluation later (outside the window).
+      const hasRecent = await hasRecentSmeAssignmentForMapping({
+        oldCampusId,
+        oldProgrammeName: application.prev_programme_name,
+        programId: application.program_id,
+        courseId,
+        oldSubjectCode: pastSubject.pastSubject_code,
+      });
+      if (hasRecent) {
+        return res.status(409).json({
+          error: `This mapping was already sent to SME recently (within ${getProcessWindowDays()} days).`,
+        });
+      }
+
       // Get SME - either from request body (coordinator's choice) or find first active one
       let sme = null;
       if (req.body.sme_id) {
@@ -776,17 +1056,50 @@ async function reviewSubject(req, res) {
         coordinator_notes: req.body.coordinator_notes || 'Sent to SME for review - subject code not in Template 3',
       });
 
+      // Mark other similar mappings as "SME is evaluating"
+      await markSimilarMappingsAsSmeEvaluating({
+        oldCampusId,
+        oldProgrammeName: application.prev_programme_name,
+        programId: application.program_id,
+        courseId,
+        oldSubjectCode: pastSubject.pastSubject_code,
+        coordinatorNotes: 'An SME is currently evaluating the same mapping',
+      });
+
       // Create SME assignment only if it doesn't exist
       let smeAssignment = existingAssignment;
       if (!existingAssignment) {
+        const assignedAt = new Date();
+        const program = await models.Program.findByPk(application.program_id, { attributes: ['campus_id'] });
+        const uniklCampusId = program?.campus_id || null;
+        const smeDays = await svc.processWindow.getSmeEvalDaysForCampus(uniklCampusId, getSmeEvalDays());
+        const dueAt = new Date(Date.now() + daysToMs(smeDays));
         smeAssignment = await models.SMEAssignment.create({
           sme_id: sme.sme_id,
           application_id: application.ct_id,
           application_subject_id: pastSubject.newApplicationSubject.application_subject_id,
           pastSubject_id: pastSubject.pastSubject_id,
           old_campus_id: oldCampusId,
+          assigned_at: assignedAt,
+          due_at: dueAt,
+          completed_at: null,
+          assignment_status: 'pending',
         });
       }
+
+      // Notify SME (lecturer) about new task
+      const coordinatorLecturer = await models.Lecturer.findByPk(lecturerId, {
+        attributes: ['lecturer_name'],
+      });
+      const coordinatorName = coordinatorLecturer?.lecturer_name || 'Coordinator';
+      await createNotification({
+        receiver_type: 'lecturer',
+        receiver_id: sme.lecturer?.lecturer_id,
+        noti_type: 'sme_task_assigned',
+        noti_title: 'New SME evaluation task',
+        noti_message: `${coordinatorName} sent you a task to evaluate a credit transfer subject. Due: ${dueAt.toISOString().slice(0, 10)}.`,
+        link_path: '/expert/assignments',
+      });
 
       return res.json({
         message: 'Subject sent to SME for review',
@@ -843,6 +1156,13 @@ async function checkTemplate3ForCurrentSubject(req, res) {
     const lecturerId = req.user.id;
     if (!lecturerId || req.user.userType !== 'lecturer') {
       return res.status(403).json({ error: 'Only lecturers can review subjects' });
+    }
+
+    // Enforce CT process window (lecturer campus)
+    const lecturer = await models.Lecturer.findByPk(lecturerId, { attributes: ['campus_id'] });
+    const ctOpen = await svc.processWindow.isCtProcessOpenForCampus(lecturer?.campus_id);
+    if (!ctOpen) {
+      return res.status(403).json({ error: 'Credit transfer process window is closed for your campus.' });
     }
 
     // Get coordinator
@@ -1078,6 +1398,16 @@ async function checkTemplate3ForCurrentSubject(req, res) {
       const coordinatorNotes = req.body.coordinator_notes || 'Sent all subjects to SME for review (many-to-one mapping)';
 
       for (const pastSubject of pastSubjects) {
+        // Avoid duplicate SME assignments within the process window for the same mapping key
+        const hasRecent = await hasRecentSmeAssignmentForMapping({
+          oldCampusId,
+          oldProgrammeName: application.prev_programme_name,
+          programId: application.program_id,
+          courseId,
+          oldSubjectCode: pastSubject.pastSubject_code,
+        });
+        if (hasRecent) continue;
+
         // Check if assignment already exists
         const existingAssignment = await models.SMEAssignment.findOne({
           where: {
@@ -1096,12 +1426,20 @@ async function checkTemplate3ForCurrentSubject(req, res) {
           });
 
           // Create SME assignment
+          const assignedAt = new Date();
+          const programForCampus = await models.Program.findByPk(application.program_id, { attributes: ['campus_id'] });
+          const smeDays = await svc.processWindow.getSmeEvalDaysForCampus(programForCampus?.campus_id, getSmeEvalDays());
+          const dueAt = new Date(Date.now() + daysToMs(smeDays));
           await models.SMEAssignment.create({
             sme_id: sme.sme_id,
             application_id: application.ct_id,
             application_subject_id: newApplicationSubject.application_subject_id,
             pastSubject_id: pastSubject.pastSubject_id,
             old_campus_id: oldCampusId,
+            assigned_at: assignedAt,
+            due_at: dueAt,
+            completed_at: null,
+            assignment_status: 'pending',
           });
         } else {
           // Update past subject status even if assignment exists (in case it was reset)
@@ -1113,10 +1451,41 @@ async function checkTemplate3ForCurrentSubject(req, res) {
         }
 
         sentSubjects.push(pastSubject.pastSubject_id);
+
+        // Mark other similar mappings as "SME is evaluating"
+        await markSimilarMappingsAsSmeEvaluating({
+          oldCampusId,
+          oldProgrammeName: application.prev_programme_name,
+          programId: application.program_id,
+          courseId,
+          oldSubjectCode: pastSubject.pastSubject_code,
+          coordinatorNotes: 'An SME is currently evaluating the same mapping',
+        });
+      }
+
+      // Notify SME only if there is at least 1 subject that truly requires SME
+      if (sentSubjects.length > 0) {
+        const coordinatorLecturer = await models.Lecturer.findByPk(lecturerId, {
+          attributes: ['lecturer_name'],
+        });
+        const coordinatorName = coordinatorLecturer?.lecturer_name || 'Coordinator';
+        const programForCampus = await models.Program.findByPk(application.program_id, { attributes: ['campus_id'] });
+        const smeDays = await svc.processWindow.getSmeEvalDaysForCampus(programForCampus?.campus_id, getSmeEvalDays());
+        const due = new Date(Date.now() + daysToMs(smeDays));
+        await createNotification({
+          receiver_type: 'lecturer',
+          receiver_id: sme.lecturer?.lecturer_id,
+          noti_type: 'sme_task_assigned',
+          noti_title: 'New SME evaluation task',
+          noti_message: `${coordinatorName} sent you a task to evaluate a credit transfer subject. Due: ${due.toISOString().slice(0, 10)}.`,
+          link_path: '/expert/assignments',
+        });
       }
 
       return res.json({
-        message: `All ${sentSubjects.length} subjects sent to SME for review`,
+        message: sentSubjects.length > 0
+          ? `Sent ${sentSubjects.length} subject(s) to SME for review`
+          : `No subjects were sent to SME (already sent recently within ${getProcessWindowDays()} days)`,
         sentSubjects,
         sme: {
           sme_id: sme.sme_id,
@@ -1127,6 +1496,145 @@ async function checkTemplate3ForCurrentSubject(req, res) {
     res.status(400).json({ error: 'Invalid action' });
   } catch (error) {
     console.error('Check Template3 for current subject error:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Coordinator: send selected approved current subjects to Head of Section
+async function sendApprovedSubjectsToHos(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    if (!lecturerId || req.user.userType !== 'lecturer') {
+      return res.status(403).json({ error: 'Only lecturers can perform this action' });
+    }
+
+    // Enforce CT process window (lecturer campus)
+    const lecturer = await models.Lecturer.findByPk(lecturerId, { attributes: ['campus_id'] });
+    const ctOpen = await svc.processWindow.isCtProcessOpenForCampus(lecturer?.campus_id);
+    if (!ctOpen) {
+      return res.status(403).json({ error: 'Credit transfer process window is closed for your campus.' });
+    }
+
+    const coordinator = await models.Coordinator.findOne({
+      where: { lecturer_id: lecturerId, end_date: null },
+    });
+    if (!coordinator) return res.status(404).json({ error: 'Coordinator not found' });
+
+    const { ct_id, applicationSubjectIds } = req.body;
+    if (!ct_id || !Array.isArray(applicationSubjectIds) || applicationSubjectIds.length === 0) {
+      return res.status(400).json({ error: 'ct_id and applicationSubjectIds[] are required' });
+    }
+
+    const application = await models.CreditTransferApplication.findOne({
+      where: { ct_id, coordinator_id: coordinator.coordinator_id },
+      include: [{ model: models.Program, as: 'program', attributes: ['program_id', 'campus_id'], required: false }],
+    });
+    if (!application) return res.status(404).json({ error: 'Application not found or not assigned to you' });
+
+    const campusId = application.program?.campus_id;
+    if (!campusId) return res.status(400).json({ error: 'Cannot determine campus for this application' });
+
+    // Find an active HOS in the same campus AND same program
+    const hos = await models.HeadOfSection.findOne({
+      where: { end_date: null, program_id: application.program_id },
+      include: [{
+        model: models.Lecturer,
+        as: 'lecturer',
+        where: { campus_id: campusId },
+        attributes: ['lecturer_id', 'lecturer_name', 'campus_id'],
+        required: true,
+      }],
+      order: [['start_date', 'DESC']],
+    });
+    if (!hos) return res.status(404).json({ error: 'No active Head of Section found for this program' });
+
+    // Load subjects and validate eligibility (fully approved)
+    const { Op } = require('sequelize');
+    const subjects = await models.NewApplicationSubject.findAll({
+      where: { application_subject_id: { [Op.in]: applicationSubjectIds }, ct_id: application.ct_id },
+      include: [{ model: models.PastApplicationSubject, as: 'pastApplicationSubjects', required: false }],
+    });
+    if (subjects.length === 0) return res.status(404).json({ error: 'No subjects found for this application' });
+
+    const eligible = [];
+    const ineligible = [];
+    for (const s of subjects) {
+      const pasts = s.pastApplicationSubjects || [];
+      const allApproved = pasts.length > 0 && pasts.every(p => ['approved_template3', 'approved_sme'].includes(p.approval_status));
+      if (allApproved) eligible.push(s);
+      else ineligible.push({ application_subject_id: s.application_subject_id });
+    }
+
+    if (eligible.length === 0) {
+      return res.status(409).json({ error: 'No selected subjects are eligible to send to HOS', ineligible });
+    }
+
+    const created = [];
+    const skipped = [];
+    for (const s of eligible) {
+      const existing = await models.HosReview.findOne({
+        where: {
+          ct_id: application.ct_id,
+          application_subject_id: s.application_subject_id,
+          status: 'pending',
+        },
+      });
+      if (existing) {
+        // Ensure statuses are consistent if already sent previously
+        await models.PastApplicationSubject.update(
+          { approval_status: 'hos_pending' },
+          {
+            where: {
+              application_subject_id: s.application_subject_id,
+              approval_status: { [Op.in]: ['approved_template3', 'approved_sme'] },
+            },
+          }
+        );
+        skipped.push(s.application_subject_id);
+        continue;
+      }
+      const review = await models.HosReview.create({
+        hos_id: hos.hos_id,
+        application_subject_id: s.application_subject_id,
+        ct_id: application.ct_id,
+        coordinator_id: coordinator.coordinator_id,
+        status: 'pending',
+      });
+      // Override prior approval statuses; HOS is now the active stage
+      await models.PastApplicationSubject.update(
+        { approval_status: 'hos_pending' },
+        {
+          where: {
+            application_subject_id: s.application_subject_id,
+            approval_status: { [Op.in]: ['approved_template3', 'approved_sme'] },
+          },
+        }
+      );
+      created.push(review.hos_review_id);
+    }
+
+    // Notify HOS (lecturer) that new review(s) are pending
+    const coordinatorLecturer = await models.Lecturer.findByPk(lecturerId, {
+      attributes: ['lecturer_name'],
+    });
+    const coordinatorName = coordinatorLecturer?.lecturer_name || 'Coordinator';
+    await createNotification({
+      receiver_type: 'lecturer',
+      receiver_id: hos.lecturer?.lecturer_id,
+      noti_type: 'hos_review_assigned',
+      noti_title: 'New HOS review request',
+      noti_message: `${coordinatorName} sent ${created.length} subject(s) for your review.`,
+      link_path: '/hos/reviews',
+    });
+
+    res.json({
+      message: `Sent ${created.length} subject(s) to HOS`,
+      hos_id: hos.hos_id,
+      created,
+      skipped,
+      ineligible,
+    });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 }
@@ -1243,6 +1751,7 @@ module.exports = {
   updateApplication,
   reviewSubject,
   checkTemplate3ForCurrentSubject,
+  sendApprovedSubjectsToHos,
   getSMEsForCourse,
   uploadMiddleware, // Export for use in routes if needed
 };

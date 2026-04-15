@@ -149,10 +149,12 @@ function passwordReset(req, res, next) {
         res.status(422).json({ error: 'Token is invalid' });
         return;
       }
-      user.update({
-        password: bcrypt.hashSync(req.body.password, bcrypt.genSaltSync()),
-        reset_token: null,
-      });
+      const hashed = bcrypt.hashSync(req.body.password, bcrypt.genSaltSync());
+      if (user.userType === 'lecturer') {
+        await user.update({ lecturer_password: hashed, reset_token: null });
+      } else {
+        await user.update({ student_password: hashed, reset_token: null });
+      }
       res.json({ status: 'successfuly update user password' });
     } catch (error) {
       res.status(500).json({ error });

@@ -35,6 +35,11 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'ct_id',
         as: 'pastSyllabusApprovals',
       });
+      // CreditTransferApplication has many HosReviews
+      this.hasMany(models.HosReview, {
+        foreignKey: 'ct_id',
+        as: 'hosReviews',
+      });
     }
   }
   CreditTransferApplication.init({

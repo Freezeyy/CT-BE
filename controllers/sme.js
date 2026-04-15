@@ -1,7 +1,108 @@
 const models = require('../models');
-const { Op } = require('sequelize');
+const { Op, Sequelize } = require('sequelize');
 const path = require('path');
 const fs = require('fs');
+const svc = require('../services');
+
+async function createNotification({ receiver_type, receiver_id, noti_type, noti_title, noti_message, link_path = null }) {
+  try {
+    if (!receiver_type || !receiver_id) return;
+    await models.Notification.create({
+      noti_receiver_type: receiver_type,
+      noti_receiver_id: receiver_id,
+      noti_type,
+      noti_title,
+      noti_message,
+      link_path,
+      is_read: false,
+      read_at: null,
+    });
+  } catch (e) {
+    console.warn('Notification create failed:', e?.message || e);
+  }
+}
+
+async function propagateSmeDecisionToSimilarMappings({
+  oldCampusId,
+  oldProgrammeName,
+  programId,
+  courseId,
+  oldSubjectCode,
+  approval_status,
+  similarity_percentage,
+  sme_review_notes,
+}) {
+  // Apply SME outcome to other rows with the same mapping key that are currently awaiting SME.
+  const oldCampus = await models.StudentOldCampus.findByPk(oldCampusId, { attributes: ['old_campus_name'] });
+  const oldCampusName = oldCampus?.old_campus_name || '';
+
+  const apps = await models.CreditTransferApplication.findAll({
+    where: {
+      program_id: programId,
+      prev_programme_name: { [Op.like]: `%${oldProgrammeName || ''}%` },
+      prev_campus_name: { [Op.like]: `%${oldCampusName}%` },
+    },
+    attributes: ['ct_id'],
+    include: [
+      {
+        model: models.NewApplicationSubject,
+        as: 'newApplicationSubjects',
+        attributes: ['application_subject_id', 'course_id'],
+        required: true,
+        where: { course_id: courseId },
+        include: [
+          {
+            model: models.PastApplicationSubject,
+            as: 'pastApplicationSubjects',
+            required: true,
+            where: {
+              pastSubject_code: oldSubjectCode,
+              approval_status: { [Op.in]: ['pending', 'needs_sme_review'] },
+            },
+          },
+        ],
+      },
+    ],
+  });
+
+  const pastIds = [];
+  for (const app of apps) {
+    for (const ns of app.newApplicationSubjects || []) {
+      for (const ps of ns.pastApplicationSubjects || []) {
+        pastIds.push(ps.pastSubject_id);
+      }
+    }
+  }
+  if (pastIds.length === 0) return 0;
+
+  const [updated] = await models.PastApplicationSubject.update(
+    {
+      approval_status,
+      sme_decision_status: approval_status,
+      similarity_percentage,
+      sme_review_notes: sme_review_notes || null,
+      needs_sme_review: false,
+    },
+    { where: { pastSubject_id: { [Op.in]: pastIds } } }
+  );
+
+  return updated;
+}
+
+function startOfToday() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function fmtDate(d) {
+  if (!d) return 'N/A';
+  try {
+    return new Date(d).toISOString().slice(0, 10);
+  } catch {
+    return 'N/A';
+  }
+}
 
 // Get SME assignments
 async function getSMEAssignments(req, res) {
@@ -23,6 +124,49 @@ async function getSMEAssignments(req, res) {
 
     if (!sme) {
       return res.status(404).json({ error: 'SME not found or not active' });
+    }
+
+    // Due-soon reminders (no cron): whenever SME loads assignments, create reminder notifications
+    // Throttle: at most once per day per assignment_id.
+    try {
+      const now = new Date();
+      const in3Days = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
+      const pending = await models.SMEAssignment.findAll({
+        where: {
+          sme_id: sme.sme_id,
+          assignment_status: { [Op.in]: ['pending', null] },
+          due_at: { [Op.lte]: in3Days, [Op.gte]: now }, // due soon
+        },
+        attributes: ['assignment_id', 'due_at', 'application_subject_id'],
+        order: [['due_at', 'ASC']],
+        limit: 50,
+      });
+
+      const today = startOfToday();
+      for (const a of pending) {
+        const msgKey = `assignment_id=${a.assignment_id}`;
+        const existing = await models.Notification.findOne({
+          where: {
+            noti_receiver_type: 'lecturer',
+            noti_receiver_id: lecturerId,
+            noti_type: 'sme_due_reminder',
+            createdAt: { [Op.gte]: today },
+            noti_message: { [Op.like]: `%${msgKey}%` },
+          },
+          attributes: ['noti_id'],
+        });
+        if (existing) continue;
+        await createNotification({
+          receiver_type: 'lecturer',
+          receiver_id: lecturerId,
+          noti_type: 'sme_due_reminder',
+          noti_title: 'SME evaluation due soon',
+          noti_message: `Reminder: an SME evaluation is due on ${fmtDate(a.due_at)} (${msgKey}).`,
+          link_path: `/expert/assignments/${a.application_subject_id}`,
+        });
+      }
+    } catch (e) {
+      console.warn('SME due reminder check failed:', e?.message || e);
     }
 
     // Get all assignments for this SME
@@ -109,6 +253,7 @@ async function getSMEAssignments(req, res) {
           pastSubject_syllabus_path: assignment.pastApplicationSubject.pastSubject_syllabus_path,
           original_filename: assignment.pastApplicationSubject.original_filename,
           approval_status: assignment.pastApplicationSubject.approval_status,
+          sme_decision_status: assignment.pastApplicationSubject.sme_decision_status,
           similarity_percentage: assignment.pastApplicationSubject.similarity_percentage,
           sme_review_notes: assignment.pastApplicationSubject.sme_review_notes,
           coordinator_notes: assignment.pastApplicationSubject.coordinator_notes,
@@ -280,6 +425,13 @@ async function reviewSubject(req, res) {
       return res.status(404).json({ error: 'SME not found or not active' });
     }
 
+    // Enforce CT process window (lecturer campus)
+    const lecturer = await models.Lecturer.findByPk(lecturerId, { attributes: ['campus_id'] });
+    const ctOpen = await svc.processWindow.isCtProcessOpenForCampus(lecturer?.campus_id);
+    if (!ctOpen) {
+      return res.status(403).json({ error: 'Credit transfer process window is closed for your campus.' });
+    }
+
     // Get the current subject with all its past subjects
     const newApplicationSubject = await models.NewApplicationSubject.findByPk(applicationSubjectId, {
       include: [
@@ -319,6 +471,20 @@ async function reviewSubject(req, res) {
       return res.status(403).json({ error: 'This assignment does not belong to you' });
     }
 
+    // Enforce per-assignment due date
+    const now = new Date();
+    const pendingOverdue = await models.SMEAssignment.findOne({
+      where: {
+        sme_id: sme.sme_id,
+        pastSubject_id: { [Op.in]: pastSubjectIds },
+        assignment_status: 'pending',
+        due_at: { [Op.lt]: now },
+      },
+    });
+    if (pendingOverdue) {
+      return res.status(403).json({ error: 'This SME evaluation assignment is overdue and can no longer be submitted.' });
+    }
+
     const application = newApplicationSubject.creditTransferApplication;
 
     // Determine approval status based on similarity
@@ -332,6 +498,7 @@ async function reviewSubject(req, res) {
       // Update past subject
       await pastSubject.update({
         approval_status,
+        sme_decision_status: approval_status,
         similarity_percentage, // Same similarity for all past subjects in the group
         sme_review_notes: sme_review_notes || null,
         needs_sme_review: false,
@@ -427,6 +594,68 @@ async function reviewSubject(req, res) {
       }
     }
 
+    // Also propagate the SME outcome to other students' same mapping (within the same key)
+    try {
+      // old_campus_id: derived from student's old_campus_id or prev_campus_name lookup (same logic as Template3 creation)
+      let oldCampusId = null;
+      const student = await models.Student.findByPk(application.student_id, { attributes: ['old_campus_id'] });
+      if (student?.old_campus_id) oldCampusId = student.old_campus_id;
+      else if (application.prev_campus_name) {
+        const oldCampus = await models.StudentOldCampus.findOne({ where: { old_campus_name: application.prev_campus_name } });
+        if (oldCampus) oldCampusId = oldCampus.old_campus_id;
+      }
+
+      if (oldCampusId) {
+        const oldSubjectCode = newApplicationSubject.pastApplicationSubjects?.[0]?.pastSubject_code;
+        const courseId = sme.course_id;
+        if (oldSubjectCode && courseId) {
+          await propagateSmeDecisionToSimilarMappings({
+            oldCampusId,
+            oldProgrammeName: application.prev_programme_name,
+            programId: application.program_id,
+            courseId,
+            oldSubjectCode,
+            approval_status,
+            similarity_percentage,
+            sme_review_notes,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to propagate SME decision:', e?.message || e);
+    }
+
+    // Notify coordinator + student that SME evaluation is completed
+    const coordinator = await models.Coordinator.findOne({
+      where: { coordinator_id: application.coordinator_id },
+      include: [{ model: models.Lecturer, as: 'lecturer', attributes: ['lecturer_id', 'lecturer_name'], required: false }],
+    });
+    const smeLecturer = await models.Lecturer.findByPk(lecturerId, { attributes: ['lecturer_name'] });
+    const smeName = smeLecturer?.lecturer_name || 'SME';
+    const subjectName = (sme.course?.course_code && sme.course?.course_name)
+      ? `${sme.course.course_code} ${sme.course.course_name}`
+      : (newApplicationSubject.application_subject_name || 'a subject');
+
+    if (coordinator?.lecturer?.lecturer_id) {
+      await createNotification({
+        receiver_type: 'lecturer',
+        receiver_id: coordinator.lecturer.lecturer_id,
+        noti_type: 'sme_decision',
+        noti_title: 'SME evaluation completed',
+        noti_message: `${smeName} completed the evaluation for ${subjectName}.`,
+        link_path: `/coordinator/review/${application.ct_id}`,
+      });
+    }
+
+    await createNotification({
+      receiver_type: 'student',
+      receiver_id: application.student_id,
+      noti_type: 'sme_decision',
+      noti_title: 'Evaluation updated',
+      noti_message: `An evaluator has updated the evaluation for ${subjectName}.`,
+      link_path: '/student/history',
+    });
+
     res.json({
       message: approval_status === 'approved_sme' 
         ? `All ${updatedPastSubjects.length} subjects approved and Template3 entries created` 
@@ -435,6 +664,17 @@ async function reviewSubject(req, res) {
       template3s: createdTemplate3s,
       application_subject_id: applicationSubjectId,
     });
+
+    // Mark SME assignments as completed for these past subjects
+    try {
+      const ids = newApplicationSubject.pastApplicationSubjects.map(ps => ps.pastSubject_id);
+      await models.SMEAssignment.update(
+        { assignment_status: 'completed', completed_at: new Date() },
+        { where: { pastSubject_id: { [Op.in]: ids }, sme_id: sme.sme_id } }
+      );
+    } catch (e) {
+      console.warn('Failed to mark SMEAssignment completed:', e?.message || e);
+    }
   } catch (error) {
     console.error('Review subject error:', error);
     res.status(500).json({ error: error.message });

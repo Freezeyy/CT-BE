@@ -10,6 +10,16 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'lecturer_id',
         as: 'lecturer',
       });
+      // HeadOfSection belongs to Program
+      this.belongsTo(models.Program, {
+        foreignKey: 'program_id',
+        as: 'program',
+      });
+      // HeadOfSection has many HosReviews
+      this.hasMany(models.HosReview, {
+        foreignKey: 'hos_id',
+        as: 'hosReviews',
+      });
     }
   }
   HeadOfSection.init({
@@ -19,6 +29,7 @@ module.exports = (sequelize, DataTypes) => {
       autoIncrement: true,
     },
     lecturer_id: DataTypes.INTEGER,
+    program_id: DataTypes.INTEGER,
     start_date: DataTypes.DATE,
     end_date: DataTypes.DATE,
   }, {
