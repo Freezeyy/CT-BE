@@ -249,7 +249,7 @@ async function assignCoordinator(req, res) {
   }
 }
 
-// Assign lecturer as Subject Method Expert
+// Assign lecturer as Subject Matter Expert
 async function assignSubjectMethodExpert(req, res) {
   try {
     const { lecturer_id, course_id, start_date, end_date } = req.body;
@@ -283,7 +283,7 @@ async function assignSubjectMethodExpert(req, res) {
 
     if (existingSME) {
       return res.status(409).json({
-        error: 'This lecturer is already a Subject Method Expert for this course',
+        error: 'This lecturer is already a Subject Matter Expert for this course',
       });
     }
 
@@ -297,7 +297,7 @@ async function assignSubjectMethodExpert(req, res) {
     });
 
     res.status(201).json({
-      message: 'Subject Method Expert assigned successfully',
+      message: 'Subject Matter Expert assigned successfully',
       sme,
     });
   } catch (error) {
@@ -570,21 +570,248 @@ async function getCourses(req, res) {
       return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
     }
 
-    // Get all courses for this campus (Super Admin sees all campuses)
+    const campusFilter = req.query.campus_id ? parseInt(req.query.campus_id) : null;
+    const programFilter = req.query.program_id ? parseInt(req.query.program_id) : null;
+
+    const whereClause = isSuperAdmin(req)
+      ? (campusFilter ? { campus_id: campusFilter } : {})
+      : { campus_id: adminCampusId };
+
     const courses = await models.Course.findAll({
-      ...(isSuperAdmin(req) ? {} : { where: { campus_id: adminCampusId } }),
-      attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'campus_id'],
-      // include: [{
-      //   model: models.Program,
-      //   as: 'programs',
-      //   attributes: ['program_id', 'program_name', 'program_code'],
-      //   through: { attributes: [] }, // Exclude junction table attributes
-      //   required: false,
-      // }],
+      where: whereClause,
+      attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'campus_id', 'category_id'],
+      include: [
+        {
+          model: models.Campus,
+          as: 'campus',
+          attributes: ['campus_id', 'campus_name'],
+          required: false,
+        },
+        ...(programFilter
+          ? [{
+              model: models.Program,
+              as: 'programs',
+              attributes: ['program_id'],
+              through: { attributes: [] },
+              required: false,
+              where: { program_id: programFilter },
+            }]
+          : []),
+      ],
       order: [['course_code', 'ASC']],
     });
 
-    res.json({ courses });
+    const out = courses.map((c) => {
+      const json = c.toJSON();
+      return {
+        ...json,
+        is_in_program: programFilter ? (json.programs || []).length > 0 : undefined,
+      };
+    });
+
+    res.json({ courses: out });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Create a course (admin only; campus admins only for own campus)
+async function createCourse(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    if (req.user.userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can create courses' });
+    }
+
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer?.campus_id) {
+      return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    }
+
+    const adminCampusId = adminLecturer.campus_id;
+    const { course_name, course_code, course_credit, campus_id, category_id, program_ids } = req.body;
+
+    if (!course_name || !course_code) {
+      return res.status(400).json({ error: 'course_name and course_code are required' });
+    }
+
+    let courseCampusId = adminCampusId;
+    if (isSuperAdmin(req)) {
+      if (campus_id) courseCampusId = parseInt(campus_id);
+    } else if (campus_id && parseInt(campus_id) !== adminCampusId) {
+      return res.status(403).json({ error: 'You can only create courses for your own campus' });
+    }
+
+    const campus = await models.Campus.findByPk(courseCampusId);
+    if (!campus) return res.status(404).json({ error: 'Campus not found' });
+
+    const existing = await models.Course.findOne({
+      where: { course_code: String(course_code).trim(), campus_id: courseCampusId },
+      attributes: ['course_id'],
+    });
+    if (existing) return res.status(409).json({ error: 'Course code already exists for this campus' });
+
+    const course = await models.Course.create({
+      course_name: String(course_name).trim(),
+      course_code: String(course_code).trim(),
+      course_credit: course_credit != null && course_credit !== '' ? parseInt(course_credit) : null,
+      campus_id: courseCampusId,
+      category_id: category_id != null && category_id !== '' ? parseInt(category_id) : null,
+    });
+
+    if (Array.isArray(program_ids) && program_ids.length > 0) {
+      const programs = await models.Program.findAll({
+        where: { program_id: { [require('sequelize').Op.in]: program_ids.map((x) => parseInt(x)) } },
+        attributes: ['program_id', 'campus_id'],
+      });
+      const allowed = isSuperAdmin(req)
+        ? programs.filter((p) => !courseCampusId || p.campus_id === courseCampusId)
+        : programs.filter((p) => p.campus_id === adminCampusId);
+      if (allowed.length > 0) await course.addPrograms(allowed);
+    }
+
+    const created = await models.Course.findByPk(course.course_id, {
+      attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'campus_id', 'category_id'],
+      include: [{ model: models.Campus, as: 'campus', attributes: ['campus_id', 'campus_name'], required: false }],
+    });
+
+    res.status(201).json({ course: created });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Update a course (admin only; campus admins only for own campus)
+async function updateCourse(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    if (req.user.userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can update courses' });
+    }
+
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer?.campus_id) return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+
+    const adminCampusId = adminLecturer.campus_id;
+    const { course_id } = req.params;
+    const course = await models.Course.findByPk(course_id);
+    if (!course) return res.status(404).json({ error: 'Course not found' });
+
+    if (!isSuperAdmin(req) && course.campus_id !== adminCampusId) {
+      return res.status(403).json({ error: 'You can only update courses for your own campus' });
+    }
+
+    const { course_name, course_code, course_credit, category_id } = req.body;
+    if (course_code) {
+      const exists = await models.Course.findOne({
+        where: {
+          course_code: String(course_code).trim(),
+          campus_id: course.campus_id,
+          course_id: { [require('sequelize').Op.ne]: course.course_id },
+        },
+        attributes: ['course_id'],
+      });
+      if (exists) return res.status(409).json({ error: 'Course code already exists for this campus' });
+    }
+
+    await course.update({
+      ...(course_name != null ? { course_name: String(course_name).trim() } : {}),
+      ...(course_code != null ? { course_code: String(course_code).trim() } : {}),
+      ...(course_credit != null ? { course_credit: course_credit === '' ? null : parseInt(course_credit) } : {}),
+      ...(category_id != null ? { category_id: category_id === '' ? null : parseInt(category_id) } : {}),
+    });
+
+    const updated = await models.Course.findByPk(course.course_id, {
+      attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'campus_id', 'category_id'],
+      include: [{ model: models.Campus, as: 'campus', attributes: ['campus_id', 'campus_name'], required: false }],
+    });
+    res.json({ course: updated });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Delete a course (admin only; campus admins only for own campus)
+async function deleteCourse(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    if (req.user.userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can delete courses' });
+    }
+
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer?.campus_id) return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+
+    const adminCampusId = adminLecturer.campus_id;
+    const { course_id } = req.params;
+    const course = await models.Course.findByPk(course_id);
+    if (!course) return res.status(404).json({ error: 'Course not found' });
+
+    if (!isSuperAdmin(req) && course.campus_id !== adminCampusId) {
+      return res.status(403).json({ error: 'You can only delete courses for your own campus' });
+    }
+
+    const [smeCount, template3Count, programCourseCount, newSubCount] = await Promise.all([
+      models.SubjectMethodExpert.count({ where: { course_id: course.course_id, end_date: null } }),
+      models.Template3 ? models.Template3.count({ where: { course_id: course.course_id } }) : 0,
+      models.ProgramCourse.count({ where: { course_id: course.course_id } }),
+      models.NewApplicationSubject ? models.NewApplicationSubject.count({ where: { course_id: course.course_id } }) : 0,
+    ]);
+
+    if (smeCount > 0 || template3Count > 0 || programCourseCount > 0 || newSubCount > 0) {
+      return res.status(409).json({
+        error: 'Cannot delete course: course is in use',
+        details: { smeCount, template3Count, programCourseCount, newSubCount },
+      });
+    }
+
+    await course.destroy();
+    res.json({ message: 'Course deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Replace program-course mappings for a program (admin/superadmin)
+async function setProgramCourses(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    if (req.user.userType !== 'lecturer' || !req.user.is_admin) {
+      return res.status(403).json({ error: 'Only administrators can update program courses' });
+    }
+
+    const adminLecturer = await Lecturer.findByPk(lecturerId);
+    if (!adminLecturer?.campus_id) return res.status(400).json({ error: 'Admin must have a campus_id assigned' });
+    const adminCampusId = adminLecturer.campus_id;
+
+    const { program_id } = req.params;
+    const program = await models.Program.findByPk(program_id, { attributes: ['program_id', 'campus_id'] });
+    if (!program) return res.status(404).json({ error: 'Program not found' });
+
+    if (!isSuperAdmin(req) && program.campus_id !== adminCampusId) {
+      return res.status(403).json({ error: 'You can only update programs for your own campus' });
+    }
+
+    const { course_ids } = req.body;
+    if (!Array.isArray(course_ids)) return res.status(400).json({ error: 'course_ids[] is required' });
+
+    const ids = course_ids.map((x) => parseInt(x)).filter(Boolean);
+    const courses = await models.Course.findAll({
+      where: { course_id: { [require('sequelize').Op.in]: ids } },
+      attributes: ['course_id', 'campus_id'],
+    });
+
+    // Only allow attaching courses from the same campus as the program
+    const allowed = courses.filter((c) => c.campus_id === program.campus_id);
+
+    await models.ProgramCourse.destroy({ where: { program_id: program.program_id } });
+    if (allowed.length > 0) {
+      await models.ProgramCourse.bulkCreate(
+        allowed.map((c) => ({ program_id: program.program_id, course_id: c.course_id }))
+      );
+    }
+
+    res.json({ message: 'Program courses updated', program_id: program.program_id, course_ids: allowed.map((c) => c.course_id) });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -845,7 +1072,7 @@ async function endStaffRole(req, res) {
           { where: { sme_id: role_id } }
         );
         if (result[0] === 0) {
-          return res.status(404).json({ error: 'Subject Method Expert assignment not found' });
+          return res.status(404).json({ error: 'Subject Matter Expert assignment not found' });
         }
         break;
 
@@ -884,6 +1111,10 @@ module.exports = {
   updateProgram,
   deleteProgram,
   getCourses,
+  createCourse,
+  updateCourse,
+  deleteCourse,
+  setProgramCourses,
   updateLecturerRole,
   getStaffAssignments,
   // Keep old endpoints for backward compatibility (optional - can remove later)

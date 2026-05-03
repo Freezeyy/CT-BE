@@ -33,7 +33,7 @@ erDiagram
     Coordinator ||--o{ Appointment : "has"
     Coordinator }o--o| Appointment : "belongs to"
     
-    %% Course and Subject Method Expert
+    %% Course and Subject Matter Expert
     Course ||--o{ SubjectMethodExpert : "has"
     
     %% Credit Transfer Application Flow

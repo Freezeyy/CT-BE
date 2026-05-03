@@ -27,7 +27,6 @@ async function propagateSmeDecisionToSimilarMappings({
   oldProgrammeName,
   programId,
   courseId,
-  oldSubjectCode,
   approval_status,
   similarity_percentage,
   sme_review_notes,
@@ -56,7 +55,6 @@ async function propagateSmeDecisionToSimilarMappings({
             as: 'pastApplicationSubjects',
             required: true,
             where: {
-              pastSubject_code: oldSubjectCode,
               approval_status: { [Op.in]: ['pending', 'needs_sme_review'] },
             },
           },
@@ -85,6 +83,64 @@ async function propagateSmeDecisionToSimilarMappings({
     },
     { where: { pastSubject_id: { [Op.in]: pastIds } } }
   );
+
+  // If approved, attach template3_id so coordinator can view the same evaluation for all similar rows.
+  // Template3 is created only on approved_sme (>= 80). Without this linkage, other students won't have a template3_id
+  // even though their approval_status was propagated.
+  if (approval_status === 'approved_sme' && Number(similarity_percentage) >= 80) {
+    try {
+      const env = process.env.NODE_ENV || 'development';
+      const config = require('../config/config')[env];
+      const isPostgres = config.dialect === 'postgres';
+
+      const pastSubjects = await models.PastApplicationSubject.findAll({
+        where: { pastSubject_id: { [Op.in]: pastIds } },
+        attributes: ['pastSubject_id', 'pastSubject_code', 'template3_id'],
+      });
+
+      for (const ps of pastSubjects) {
+        if (ps.template3_id) continue;
+        const oldSubjectCode = ps.pastSubject_code;
+        if (!oldSubjectCode) continue;
+
+        const whereAnd = [
+          { old_campus_id: oldCampusId },
+          { program_id: programId },
+          { course_id: courseId },
+          { old_subject_code: oldSubjectCode },
+          { is_active: true },
+        ];
+
+        if (oldProgrammeName) {
+          if (isPostgres) {
+            whereAnd.push({ old_programme_name: { [Op.iLike]: `%${oldProgrammeName}%` } });
+          } else {
+            whereAnd.push(
+              Sequelize.where(
+                Sequelize.fn('LOWER', Sequelize.col('old_programme_name')),
+                { [Op.like]: `%${String(oldProgrammeName).toLowerCase()}%` }
+              )
+            );
+          }
+        }
+
+        const t3 = await models.Template3.findOne({
+          where: { [Op.and]: whereAnd },
+          attributes: ['template3_id'],
+        });
+
+        if (t3?.template3_id) {
+          await models.PastApplicationSubject.update(
+            { template3_id: t3.template3_id },
+            { where: { pastSubject_id: ps.pastSubject_id } }
+          );
+        }
+      }
+    } catch (e) {
+      // don't fail propagation if template3 linking fails
+      console.warn('propagateSmeDecisionToSimilarMappings: failed to link template3_id:', e?.message || e);
+    }
+  }
 
   return updated;
 }
@@ -488,7 +544,8 @@ async function reviewSubject(req, res) {
     const application = newApplicationSubject.creditTransferApplication;
 
     // Determine approval status based on similarity
-    const approval_status = similarity_percentage >= 80 ? 'approved_sme' : 'rejected';
+    // If below 80%, do NOT immediately expose "rejected" to student; coordinator will decide next steps.
+    const approval_status = similarity_percentage >= 80 ? 'approved_sme' : 'sme_reviewed_rejected';
 
     // Update ALL past subjects for this current subject with the same review
     const updatedPastSubjects = [];
@@ -498,6 +555,7 @@ async function reviewSubject(req, res) {
       // Update past subject
       await pastSubject.update({
         approval_status,
+        // Preserve SME outcome in dedicated field (approved_sme or sme_reviewed_rejected)
         sme_decision_status: approval_status,
         similarity_percentage, // Same similarity for all past subjects in the group
         sme_review_notes: sme_review_notes || null,
@@ -606,15 +664,13 @@ async function reviewSubject(req, res) {
       }
 
       if (oldCampusId) {
-        const oldSubjectCode = newApplicationSubject.pastApplicationSubjects?.[0]?.pastSubject_code;
         const courseId = sme.course_id;
-        if (oldSubjectCode && courseId) {
+        if (courseId) {
           await propagateSmeDecisionToSimilarMappings({
             oldCampusId,
             oldProgrammeName: application.prev_programme_name,
             programId: application.program_id,
             courseId,
-            oldSubjectCode,
             approval_status,
             similarity_percentage,
             sme_review_notes,
@@ -659,7 +715,7 @@ async function reviewSubject(req, res) {
     res.json({
       message: approval_status === 'approved_sme' 
         ? `All ${updatedPastSubjects.length} subjects approved and Template3 entries created` 
-        : `All ${updatedPastSubjects.length} subjects rejected`,
+        : `All ${updatedPastSubjects.length} subjects evaluated (below 80%)`,
       pastSubjects: updatedPastSubjects,
       template3s: createdTemplate3s,
       application_subject_id: applicationSubjectId,

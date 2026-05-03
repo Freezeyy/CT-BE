@@ -12,13 +12,13 @@ erDiagram
     %% --- Previous institutions (not UniKL Campuses) ---
     UniType ||--o{ Institution : classifies
     Institution ||--o{ StudentOldCampus : has_branches
-    StudentOldCampus }o--|| Institution : belongs_to
 
     %% --- UniKL structure ---
     Campus ||--o{ Lecturer : employs
     Campus ||--o{ Student : hosts
     Campus ||--o{ Program : hosts
     Campus ||--o{ Course : hosts
+    Campus ||--o| CampusProcessWindow : process_window
 
     Category ||--o{ Course : categorizes
 
@@ -29,33 +29,33 @@ erDiagram
     Lecturer ||--o{ Coordinator : may_be
     Lecturer ||--o{ SubjectMethodExpert : may_be
     Lecturer ||--o{ HeadOfSection : may_be
-    Coordinator }o--|| Program : coordinates
-    Coordinator }o--o| Appointment : linked_appointment
-    SubjectMethodExpert }o--|| Course : expert_for
-    SubjectMethodExpert }o--o| CreditTransferApplication : optional_application
+    Program ||--o{ Coordinator : has_coordinators
+    Course ||--o{ SubjectMethodExpert : has_smes
+    Program ||--o{ HeadOfSection : has_hos
 
     %% --- Student & applications ---
-    Student }o--|| Campus : studies_at
-    Student }o--|| Program : enrolled_in
-    Student }o--o| StudentOldCampus : previous_branch
     Student ||--o{ CreditTransferApplication : submits
     Student ||--o{ Appointment : books
+    Program ||--o{ Student : enrolled_students
+    StudentOldCampus ||--o{ Student : alumni
 
     Program ||--o{ CreditTransferApplication : receives
-    CreditTransferApplication }o--o| Coordinator : assigned_coordinator
+    Coordinator ||--o{ CreditTransferApplication : assigned_applications
 
     CreditTransferApplication ||--o{ NewApplicationSubject : contains
     CreditTransferApplication ||--o{ SMEAssignment : has
     CreditTransferApplication ||--o{ PastSyllabusApproval : has
+    CreditTransferApplication ||--o{ HosReview : has_hos_reviews
 
-    NewApplicationSubject }o--|| Course : maps_to_course
+    Course ||--o{ NewApplicationSubject : application_subjects
     NewApplicationSubject ||--o{ PastApplicationSubject : has_past
     NewApplicationSubject ||--o{ SMEAssignment : has
     NewApplicationSubject ||--o{ PastSyllabusApproval : has
+    NewApplicationSubject ||--o{ HosReview : has_hos_reviews
 
-    PastApplicationSubject }o--|| NewApplicationSubject : belongs_to
-    PastApplicationSubject }o--o| Template3 : matched_template
+    Template3 ||--o{ PastApplicationSubject : matched_past_subjects
     PastApplicationSubject ||--o{ PastSyllabusApproval : has
+    PastApplicationSubject ||--o{ SMEAssignment : assignments
 
     StudentOldCampus ||--o{ Template3 : referenced_by
     StudentOldCampus ||--o{ SMEAssignment : context
@@ -67,13 +67,12 @@ erDiagram
     Template3 }o--o| Template3 : replaced_by
 
     SubjectMethodExpert ||--o{ SMEAssignment : assigned
-    SMEAssignment }o--|| CreditTransferApplication : for_ct
-    SMEAssignment }o--|| NewApplicationSubject : for_current
-    SMEAssignment }o--|| PastApplicationSubject : for_past
-    SMEAssignment }o--|| StudentOldCampus : old_campus
 
-    Appointment }o--|| Student : with_student
-    Appointment }o--|| Coordinator : with_coordinator
+    Coordinator ||--o{ Appointment : appointments
+
+    %% --- HOS workflow ---
+    HeadOfSection ||--o{ HosReview : assigned_reviews
+    Coordinator ||--o{ HosReview : sent_reviews
 
     UniType {
         int uni_type_id PK
@@ -173,8 +172,20 @@ erDiagram
     HeadOfSection {
         int hos_id PK
         int lecturer_id FK
+        int program_id FK
         date start_date
         date end_date
+    }
+
+    HosReview {
+        int hos_review_id PK
+        int hos_id FK
+        int application_subject_id FK
+        int ct_id FK
+        int coordinator_id FK
+        string status
+        text hos_notes
+        datetime decided_at
     }
 
     CreditTransferApplication {
@@ -241,6 +252,10 @@ erDiagram
         int application_subject_id FK
         int pastSubject_id FK
         int old_campus_id FK
+        datetime assigned_at
+        datetime due_at
+        datetime completed_at
+        string assignment_status
     }
 
     PastSyllabusApproval {
@@ -249,6 +264,14 @@ erDiagram
         int ct_id FK
         int pastSubject_id FK
         int application_subject_id FK
+    }
+
+    CampusProcessWindow {
+        int campus_process_window_id PK
+        int campus_id FK
+        datetime ct_start_at
+        datetime ct_end_at
+        int sme_eval_days
     }
 
     Appointment {
@@ -266,6 +289,11 @@ erDiagram
         string noti_type
         string noti_title
         string noti_message
+        string noti_receiver_type
+        int noti_receiver_id
+        boolean is_read
+        datetime read_at
+        string link_path
     }
 ```
 

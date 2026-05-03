@@ -16,13 +16,11 @@ async function determineUserRole(user) {
   if (user.userType === 'lecturer') {
     const lecturerId = user.lecturer_id || user.id;
 
-    // 1. Check if Super Admin (highest priority)
-    if (user.is_superadmin) return 'Super Admin';
+    // NOTE: "Admin access" is an access flag, not a functional role.
+    // Prefer returning the functional role (HOS/Coordinator/SME) when present,
+    // while still returning is_admin/is_superadmin in the login payload.
 
-    // 2. Check if admin
-    if (user.is_admin) return 'Administrator';
-
-    // 3. Check if Head of Section
+    // 1. Check if Head of Section
     const hos = await models.HeadOfSection.findOne({
       where: {
         lecturer_id: lecturerId,
@@ -33,7 +31,7 @@ async function determineUserRole(user) {
       return 'Head Of Section';
     }
 
-    // 4. Check if Program Coordinator
+    // 2. Check if Program Coordinator
     const coordinator = await models.Coordinator.findOne({
       where: {
         lecturer_id: lecturerId,
@@ -44,7 +42,7 @@ async function determineUserRole(user) {
       return 'Program Coordinator';
     }
 
-    // 5. Check if Subject Method Expert
+    // 3. Check if Subject Matter Expert
     const sme = await models.SubjectMethodExpert.findOne({
       where: {
         lecturer_id: lecturerId,
@@ -55,7 +53,11 @@ async function determineUserRole(user) {
       return 'Subject Method Expert';
     }
 
-    // Default lecturer role (though frontend might not handle this)
+    // 4. If no functional role, fall back to admin roles (if any)
+    if (user.is_superadmin) return 'Super Admin';
+    if (user.is_admin) return 'Administrator';
+
+    // Default lecturer role
     return 'Lecturer';
   }
 
@@ -83,14 +85,40 @@ function login(req, res, next) {
           uid: user.id, 
           email: user.email, 
           userType: user.userType || (user.student_id ? 'student' : 'lecturer'),
-          is_admin: user.is_admin || false // Include is_admin in JWT for lecturers
+          is_admin: user.is_admin || false,
+          is_superadmin: user.is_superadmin || false,
         };
         // Sign the JWT token and populate the payload with the user email and id
         // Send back the token to the user
         const token = jwt.sign(jwt_content, process.env.PROJECT_JWT_SECRET, { expiresIn: 86400 });
         const refreshToken = randtoken.uid(256);
         refreshTokens[refreshToken] = user.email;
-        res.json({ token, refreshToken, role, name: userName });
+        let campus_id = null;
+        let campus_name = null;
+        try {
+          if (jwt_content.userType === 'lecturer') {
+            const lecturer = await models.Lecturer.findByPk(user.id, { attributes: ['campus_id'] });
+            campus_id = lecturer?.campus_id || null;
+            if (campus_id) {
+              const campus = await models.Campus.findByPk(campus_id, { attributes: ['campus_name'] });
+              campus_name = campus?.campus_name || null;
+            }
+          }
+        } catch {
+          // ignore
+        }
+
+        res.json({
+          token,
+          refreshToken,
+          role,
+          name: userName,
+          userType: jwt_content.userType,
+          is_admin: !!jwt_content.is_admin,
+          is_superadmin: !!jwt_content.is_superadmin,
+          campus_id,
+          campus_name,
+        });
       });
     } catch (error) {
       next(error);
@@ -108,6 +136,7 @@ function signup(req, res, next) {
       // Don't send password back
       const userResponse = {
         student_id: user.student_id,
+        student_identifier: user.student_identifier,
         student_name: user.student_name,
         student_email: user.student_email,
         student_phone: user.student_phone,

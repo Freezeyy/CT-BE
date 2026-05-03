@@ -42,6 +42,15 @@ module.exports = {
     });
   },
   down: async (queryInterface) => {
+    // In some environments, `MappingBanks` exists outside the migration chain
+    // and references `Programs`. Drop that FK constraint first so undo works.
+    try {
+      await queryInterface.sequelize.query(
+        'ALTER TABLE `MappingBanks` DROP FOREIGN KEY `mappingbanks_ibfk_2`'
+      );
+    } catch (e) {
+      // ignore if table/constraint doesn't exist
+    }
     await queryInterface.dropTable('Programs');
   },
 };

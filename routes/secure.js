@@ -29,6 +29,10 @@ router.post('/admin/programs', m.requireAdmin, c.admin.createProgram);
 router.put('/admin/programs/:program_id', m.requireAdmin, c.admin.updateProgram);
 router.delete('/admin/programs/:program_id', m.requireAdmin, c.admin.deleteProgram);
 router.get('/admin/courses', m.requireAdmin, c.admin.getCourses);
+router.post('/admin/courses', m.requireAdmin, c.admin.createCourse);
+router.put('/admin/courses/:course_id', m.requireAdmin, c.admin.updateCourse);
+router.delete('/admin/courses/:course_id', m.requireAdmin, c.admin.deleteCourse);
+router.put('/admin/programs/:program_id/courses', m.requireAdmin, c.admin.setProgramCourses);
 
 // Super Admin routes (admin + super-admin email)
 router.get('/super-admin/uni-types', m.requireAdmin, c.superAdmin.listUniTypes);
@@ -63,6 +67,8 @@ router.get('/credit-transfer/applications', m.requireAdminOrUser, c.creditTransf
 
 // Student routes
 router.get('/student/profile', m.requireAdminOrUser, c.creditTransfer.getStudentProfile);
+router.put('/student/profile', m.requireAdminOrUser, c.creditTransfer.updateStudentProfile);
+router.post('/credit-transfer/student/reapply-subject', m.requireAdminOrUser, c.creditTransfer.reapplySubject);
 router.get('/lecturer/profile', m.requireAdminOrUser, c.profile.getLecturerProfile);
 router.get('/credit-transfer/coordinator/applications', m.requireAdminOrUser, c.creditTransfer.getCoordinatorApplications);
 router.post('/credit-transfer/coordinator/review-subject', m.requireAdminOrUser, c.creditTransfer.reviewSubject);
@@ -78,9 +84,20 @@ router.post('/credit-transfer/sme/review-subject/:applicationSubjectId', m.requi
 router.get('/credit-transfer/sme/syllabus/:filename', m.requireAdminOrUser, c.sme.getSyllabusFile);
 
 // HOS routes
+router.get('/hos/reviews/stats', m.requireAdminOrUser, c.hos.getHosReviewStats);
 router.get('/hos/reviews', m.requireAdminOrUser, c.hos.listMyHosReviews);
 router.get('/hos/reviews/:hosReviewId', m.requireAdminOrUser, c.hos.getHosReviewDetail);
 router.post('/hos/reviews/:hosReviewId/decide', m.requireAdminOrUser, c.hos.decideHosReview);
+
+// Mapping Banks (coordinator upload + student view)
+router.post('/mapping-banks/upload', m.requireAdminOrUser, c.mappingBank.uploadMappingBank);
+router.get('/mapping-banks/my', m.requireAdminOrUser, c.mappingBank.listMyMappingBanks);
+router.delete('/mapping-banks/my/:mb_id', m.requireAdminOrUser, c.mappingBank.deleteMyMappingBank);
+router.get('/mapping-banks/my-prev-program-options', m.requireAdminOrUser, c.mappingBank.listMyPrevProgramOptions);
+router.get('/mapping-banks/students', m.requireAdminOrUser, c.mappingBank.listMyStudents);
+router.post('/mapping-banks/assign', m.requireAdminOrUser, c.mappingBank.assignMappingBankToStudents);
+router.get('/mapping-banks/student/browse', m.requireAdminOrUser, c.mappingBank.browseStudentMappingBanks);
+router.get('/mapping-banks/student/my', m.requireAdminOrUser, c.mappingBank.getMyAssignedMappingBanks);
 
 // Program routes
 // GET /api/program/structure - Get program structure (and optionally courses with ?includeCourses=true)

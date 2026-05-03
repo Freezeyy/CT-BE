@@ -1,5 +1,85 @@
+const { Op } = require('sequelize');
 const models = require('../models');
 const svc = require('../services');
+
+/** Programme pipeline bucket for read-only Head of Section overview (aligned with coordinator inbox semantics). */
+function deriveApplicationPipelineBucket(app) {
+  const subjects = app.newApplicationSubjects || [];
+  const statuses = subjects.flatMap((s) =>
+    (s.pastApplicationSubjects || []).map((p) => String(p.approval_status || '').toLowerCase()),
+  );
+
+  const any = (arr) => statuses.some((x) => arr.includes(x));
+  const all = (arr) => statuses.length > 0 && statuses.every((x) => arr.includes(x));
+
+  if (statuses.length === 0) return 'coordinator';
+
+  // Terminal outcomes
+  if (any(['hos_rejected', 'rejected', 'sme_reviewed_rejected'])) return 'rejected';
+  if (all(['hos_approved'])) return 'hos_completed';
+
+  // Waiting on Head of Section
+  if (any(['hos_pending'])) return 'hos_queue';
+
+  if (any(['needs_sme_review'])) return 'awaiting_sme';
+
+  if (any(['approved_sme'])) return 'coordinator_after_sme';
+  if (all(['pending'])) return 'coordinator_needs_review';
+  return 'coordinator_needs_review';
+}
+
+async function buildProgramPipelineStats(programId) {
+  const applications = await models.CreditTransferApplication.findAll({
+    where: {
+      program_id: programId,
+      ct_status: { [Op.ne]: 'draft' },
+    },
+    attributes: ['ct_id', 'ct_status', 'student_id'],
+    include: [
+      {
+        model: models.NewApplicationSubject,
+        as: 'newApplicationSubjects',
+        attributes: ['application_subject_id'],
+        include: [
+          {
+            model: models.PastApplicationSubject,
+            as: 'pastApplicationSubjects',
+            attributes: ['approval_status'],
+            required: false,
+          },
+        ],
+        required: false,
+      },
+    ],
+  });
+
+  const buckets = {
+    coordinator: 0,
+    awaiting_sme: 0,
+    hos_queue: 0,
+    terminal: 0,
+  };
+
+  const studentIds = new Set();
+
+  for (const app of applications) {
+    if (app.student_id != null) studentIds.add(app.student_id);
+    const b = deriveApplicationPipelineBucket(app);
+    if (b === 'awaiting_sme') buckets.awaiting_sme += 1;
+    else if (b === 'hos_queue') buckets.hos_queue += 1;
+    else if (b === 'rejected' || b === 'hos_completed') buckets.terminal += 1;
+    else buckets.coordinator += 1;
+  }
+
+  return {
+    applications_at_coordinator: buckets.coordinator,
+    applications_awaiting_sme: buckets.awaiting_sme,
+    applications_awaiting_hos: buckets.hos_queue,
+    applications_terminal: buckets.terminal,
+    total_applications: applications.length,
+    distinct_students_applied: studentIds.size,
+  };
+}
 
 async function createNotification({ receiver_type, receiver_id, noti_type, noti_title, noti_message, link_path = null }) {
   try {
@@ -27,7 +107,33 @@ async function getActiveHosForLecturer(req) {
   });
 }
 
-// List HOS reviews assigned to this HOS
+// Dashboard: HOS review counts + programme-wide pipeline (read-only)
+async function getHosReviewStats(req, res) {
+  try {
+    const hos = await getActiveHosForLecturer(req);
+    if (!hos) return res.status(403).json({ error: 'Head of Section role not found' });
+
+    const baseWhere = { hos_id: hos.hos_id };
+    const [pending, approved, rejected, pipeline] = await Promise.all([
+      models.HosReview.count({ where: { ...baseWhere, status: 'pending' } }),
+      models.HosReview.count({ where: { ...baseWhere, status: 'approved' } }),
+      models.HosReview.count({ where: { ...baseWhere, status: 'rejected' } }),
+      buildProgramPipelineStats(hos.program_id),
+    ]);
+
+    const stats = {
+      pending,
+      approved,
+      rejected,
+      total: pending + approved + rejected,
+    };
+
+    res.json({ stats, pipeline });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
 async function listMyHosReviews(req, res) {
   try {
     const hos = await getActiveHosForLecturer(req);
@@ -192,6 +298,7 @@ async function decideHosReview(req, res) {
 }
 
 module.exports = {
+  getHosReviewStats,
   listMyHosReviews,
   getHosReviewDetail,
   decideHosReview,

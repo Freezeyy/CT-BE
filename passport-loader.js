@@ -18,6 +18,7 @@ passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField
       email,
       password,
       phone,
+      student_identifier,
       program_id,
       campus_id,
       uni_type_id,
@@ -27,8 +28,8 @@ passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField
     } = req.body;
     
     // Validate required fields
-    if (!name || !email || !password || !program_id || !campus_id) {
-      return done(null, false, { message: 'Missing required fields: name, email, password, program_id, and campus_id are required' });
+    if (!name || !email || !password || !student_identifier || !program_id || !campus_id) {
+      return done(null, false, { message: 'Missing required fields: name, email, password, student_identifier, program_id, and campus_id are required' });
     }
     if (!prev_programme_name) {
       return done(null, false, { message: 'Missing required field: prev_programme_name is required' });
@@ -43,6 +44,12 @@ passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField
     
     if (student || lecturer) {
       return done(null, false, { message: 'That email is already taken' });
+    }
+
+    // Student ID must be unique among students
+    const existingStudentIdentifier = await Student.findOne({ where: { student_identifier } });
+    if (existingStudentIdentifier) {
+      return done(null, false, { message: 'That student ID is already taken' });
     }
     
     const hashpass = bcrypt.hashSync(password, bcrypt.genSaltSync());
@@ -78,6 +85,7 @@ passport.use('signup', new LocalStrategy({ usernameField: 'email', passwordField
         student_email: email,
         student_password: hashpass,
         student_phone: phone || null,
+        student_identifier: String(student_identifier || '').trim(),
         program_id: program_id, // Required - program they want to apply for credit transfer
         campus_id: campus_id, // Required - campus they want to transfer credits to
         old_campus_id: resolvedOldCampusId,

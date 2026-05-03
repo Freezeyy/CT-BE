@@ -47,6 +47,7 @@ module.exports = (sequelize, DataTypes) => {
     campus_id: DataTypes.INTEGER,
     old_campus_id: DataTypes.INTEGER,
     prev_programme_name: DataTypes.STRING,
+    student_identifier: DataTypes.STRING,
   }, {
     sequelize,
     modelName: 'Student',

@@ -120,13 +120,62 @@ async function hasRecentSmeAssignmentForMapping({
   return String(prevName).toLowerCase().includes(String(oldProgrammeName || '').toLowerCase());
 }
 
+async function hasActiveSmeAssignmentForSubjectKey({
+  oldCampusId,
+  oldProgrammeName,
+  programId,
+  courseId,
+}) {
+  const since = new Date(Date.now() - daysToMs(getProcessWindowDays()));
+
+  // "Active" means the SME assignment is still pending (not completed).
+  // We intentionally do NOT key by oldSubjectCode here because coordinator UX treats
+  // the whole current subject as "SME is evaluating" once an SME is evaluating that mapping set.
+  const found = await models.SMEAssignment.findOne({
+    where: {
+      old_campus_id: oldCampusId,
+      createdAt: { [Op.gte]: since },
+      assignment_status: { [Op.in]: ['pending', null] },
+      completed_at: null,
+    },
+    include: [
+      {
+        model: models.PastApplicationSubject,
+        as: 'pastApplicationSubject',
+        required: true,
+        attributes: ['pastSubject_id'],
+        include: [
+          {
+            model: models.NewApplicationSubject,
+            as: 'newApplicationSubject',
+            required: true,
+            attributes: ['application_subject_id', 'course_id'],
+            where: { course_id: courseId },
+            include: [
+              {
+                model: models.CreditTransferApplication,
+                as: 'creditTransferApplication',
+                required: true,
+                attributes: ['ct_id', 'program_id', 'prev_programme_name'],
+                where: { program_id: programId },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+
+  if (!found) return false;
+  const prevName = found.pastApplicationSubject?.newApplicationSubject?.creditTransferApplication?.prev_programme_name || '';
+  return String(prevName).toLowerCase().includes(String(oldProgrammeName || '').toLowerCase());
+}
+
 async function markSimilarMappingsAsSmeEvaluating({
   oldCampusId,
   oldProgrammeName,
   programId,
   courseId,
-  oldSubjectCode,
-  coordinatorNotes,
 }) {
   // Find other pending rows with same mapping key and mark them as "awaiting SME".
   // IMPORTANT: some students may not have Student.old_campus_id set; in that case we match using
@@ -152,7 +201,6 @@ async function markSimilarMappingsAsSmeEvaluating({
             as: 'pastApplicationSubjects',
             required: true,
             where: {
-              pastSubject_code: oldSubjectCode,
               approval_status: 'pending',
             },
           },
@@ -176,7 +224,6 @@ async function markSimilarMappingsAsSmeEvaluating({
     {
       approval_status: 'needs_sme_review',
       needs_sme_review: true,
-      coordinator_notes: coordinatorNotes || 'An SME is currently evaluating the same mapping',
     },
     { where: { pastSubject_id: { [Op.in]: pastIds } } }
   );
@@ -598,16 +645,16 @@ async function submitApplication(req, res) {
           for (const s of subjects) {
             const courseId = s.course_id;
             if (!courseId) continue;
-            for (const ps of s.pastApplicationSubjects || []) {
-              if (ps.approval_status !== 'pending') continue;
-              const hasRecent = await hasRecentSmeAssignmentForMapping({
-                oldCampusId,
-                oldProgrammeName: application.prev_programme_name,
-                programId: application.program_id,
-                courseId,
-                oldSubjectCode: ps.pastSubject_code,
-              });
-              if (hasRecent) {
+            const hasActive = await hasActiveSmeAssignmentForSubjectKey({
+              oldCampusId,
+              oldProgrammeName: application.prev_programme_name,
+              programId: application.program_id,
+              courseId,
+            });
+
+            if (hasActive) {
+              for (const ps of s.pastApplicationSubjects || []) {
+                if (ps.approval_status !== 'pending') continue;
                 await ps.update({
                   approval_status: 'needs_sme_review',
                   needs_sme_review: true,
@@ -749,12 +796,13 @@ async function getCoordinatorApplications(req, res) {
       where: {
         coordinator_id: coordinator.coordinator_id,
         program_id: coordinator.program_id,
+        ct_status: { [Op.ne]: 'draft' },
       },
       include: [
         {
           model: models.Student,
           as: 'student',
-          attributes: ['student_id', 'student_name', 'student_email', 'student_phone'],
+          attributes: ['student_id', 'student_identifier', 'student_name', 'student_email', 'student_phone'],
         },
         {
           model: models.Program,
@@ -777,6 +825,26 @@ async function getCoordinatorApplications(req, res) {
               attributes: ['hos_review_id', 'status', 'createdAt'],
               required: false,
               where: { status: 'pending' },
+            },
+            {
+              model: models.SMEAssignment,
+              as: 'smeAssignments',
+              attributes: ['assignment_id', 'sme_id', 'assignment_status', 'assigned_at', 'completed_at'],
+              required: false,
+              include: [
+                {
+                  model: models.SubjectMethodExpert,
+                  as: 'subjectMethodExpert',
+                  attributes: ['sme_id'],
+                  include: [
+                    {
+                      model: models.Lecturer,
+                      as: 'lecturer',
+                      attributes: ['lecturer_id', 'lecturer_name', 'lecturer_email'],
+                    },
+                  ],
+                },
+              ],
             },
             {
               model: models.PastApplicationSubject,
@@ -999,10 +1067,24 @@ async function reviewSubject(req, res) {
         courseId,
         oldSubjectCode: pastSubject.pastSubject_code,
       });
+      // If already under SME review recently, don't block the coordinator flow.
+      // Mark the whole current subject as SME evaluating and mirror to similar pending rows.
       if (hasRecent) {
-        return res.status(409).json({
-          error: `This mapping was already sent to SME recently (within ${getProcessWindowDays()} days).`,
+        const allPast = await models.PastApplicationSubject.findAll({
+          where: { application_subject_id: pastSubject.newApplicationSubject.application_subject_id },
+          attributes: ['pastSubject_id', 'approval_status'],
         });
+        for (const ps of allPast) {
+          if (String(ps.approval_status || '').toLowerCase() !== 'pending') continue;
+          await ps.update({ approval_status: 'needs_sme_review', needs_sme_review: true });
+        }
+        await markSimilarMappingsAsSmeEvaluating({
+          oldCampusId,
+          oldProgrammeName: application.prev_programme_name,
+          programId: application.program_id,
+          courseId,
+        });
+        return res.json({ message: 'SME is already evaluating a similar mapping; marked as evaluating.' });
       }
 
       // Get SME - either from request body (coordinator's choice) or find first active one
@@ -1041,50 +1123,50 @@ async function reviewSubject(req, res) {
         }
       }
 
-      // Check if assignment already exists
-      const existingAssignment = await models.SMEAssignment.findOne({
-        where: {
-          sme_id: sme.sme_id,
-          pastSubject_id: pastSubject.pastSubject_id,
-        },
+      // Mark all pending past subjects under this current subject as SME evaluating
+      const subjectPastSubjects = await models.PastApplicationSubject.findAll({
+        where: { application_subject_id: pastSubject.newApplicationSubject.application_subject_id },
+        attributes: ['pastSubject_id', 'approval_status', 'pastSubject_code'],
       });
 
-      // Update past subject
-      await pastSubject.update({
-        approval_status: 'needs_sme_review',
-        needs_sme_review: true,
-        coordinator_notes: req.body.coordinator_notes || 'Sent to SME for review - subject code not in Template 3',
-      });
+      for (const ps of subjectPastSubjects) {
+        if (String(ps.approval_status || '').toLowerCase() !== 'pending') continue;
+        await ps.update({ approval_status: 'needs_sme_review', needs_sme_review: true });
+      }
 
-      // Mark other similar mappings as "SME is evaluating"
+      // Mark other similar mappings (other applications) as SME evaluating too
       await markSimilarMappingsAsSmeEvaluating({
         oldCampusId,
         oldProgrammeName: application.prev_programme_name,
         programId: application.program_id,
         courseId,
-        oldSubjectCode: pastSubject.pastSubject_code,
-        coordinatorNotes: 'An SME is currently evaluating the same mapping',
       });
 
-      // Create SME assignment only if it doesn't exist
-      let smeAssignment = existingAssignment;
-      if (!existingAssignment) {
-        const assignedAt = new Date();
-        const program = await models.Program.findByPk(application.program_id, { attributes: ['campus_id'] });
-        const uniklCampusId = program?.campus_id || null;
-        const smeDays = await svc.processWindow.getSmeEvalDaysForCampus(uniklCampusId, getSmeEvalDays());
-        const dueAt = new Date(Date.now() + daysToMs(smeDays));
-        smeAssignment = await models.SMEAssignment.create({
+      // Create SME assignments per pending past subject (so both past subjects show "SME is evaluating")
+      const assignedAt = new Date();
+      const program = await models.Program.findByPk(application.program_id, { attributes: ['campus_id'] });
+      const uniklCampusId = program?.campus_id || null;
+      const smeDays = await svc.processWindow.getSmeEvalDaysForCampus(uniklCampusId, getSmeEvalDays());
+      const dueAt = new Date(Date.now() + daysToMs(smeDays));
+
+      let createdCount = 0;
+      for (const ps of subjectPastSubjects) {
+        const exists = await models.SMEAssignment.findOne({
+          where: { sme_id: sme.sme_id, pastSubject_id: ps.pastSubject_id },
+        });
+        if (exists) continue;
+        await models.SMEAssignment.create({
           sme_id: sme.sme_id,
           application_id: application.ct_id,
           application_subject_id: pastSubject.newApplicationSubject.application_subject_id,
-          pastSubject_id: pastSubject.pastSubject_id,
+          pastSubject_id: ps.pastSubject_id,
           old_campus_id: oldCampusId,
           assigned_at: assignedAt,
           due_at: dueAt,
           completed_at: null,
           assignment_status: 'pending',
         });
+        createdCount += 1;
       }
 
       // Notify SME (lecturer) about new task
@@ -1103,10 +1185,7 @@ async function reviewSubject(req, res) {
 
       return res.json({
         message: 'Subject sent to SME for review',
-        smeAssignment: {
-          assignment_id: smeAssignment.assignment_id,
-          sme_id: sme.sme_id,
-        },
+        smeAssignment: { sme_id: sme.sme_id, created: createdCount },
         pastSubject: await models.PastApplicationSubject.findByPk(pastSubjectId, {
           attributes: ['pastSubject_id', 'pastSubject_code', 'approval_status', 'needs_sme_review'],
         }),
@@ -1174,7 +1253,7 @@ async function checkTemplate3ForCurrentSubject(req, res) {
       return res.status(404).json({ error: 'Coordinator not found' });
     }
 
-    const { applicationSubjectId, action } = req.body; // action: 'check_template3', 'approve_all', 'send_all_to_sme'
+    const { applicationSubjectId, action } = req.body; // action: 'check_template3', 'approve_all', 'send_all_to_sme', 'reject_all'
 
     // Get the current subject (NewApplicationSubject) with all its past subjects
     const newApplicationSubject = await models.NewApplicationSubject.findByPk(applicationSubjectId, {
@@ -1201,10 +1280,7 @@ async function checkTemplate3ForCurrentSubject(req, res) {
         {
           model: models.PastApplicationSubject,
           as: 'pastApplicationSubjects',
-          where: {
-            approval_status: 'pending', // Only check pending subjects
-          },
-          required: false, // LEFT JOIN - in case there are no pending subjects
+          required: false, // LEFT JOIN - include all, we will filter per action
         },
       ],
     });
@@ -1214,8 +1290,47 @@ async function checkTemplate3ForCurrentSubject(req, res) {
     }
 
     const application = newApplicationSubject.creditTransferApplication;
-    const pastSubjects = newApplicationSubject.pastApplicationSubjects || [];
+    const pastSubjectsAll = newApplicationSubject.pastApplicationSubjects || [];
+    const pastSubjectsPending = pastSubjectsAll.filter(ps => String(ps.approval_status || '').toLowerCase() === 'pending');
 
+    // Reject can be used for pending or SME-reviewed-below-80%
+    const pastSubjectsRejectable = pastSubjectsAll.filter(ps => {
+      const s = String(ps.approval_status || '').toLowerCase();
+      return s === 'pending' || s === 'sme_reviewed_rejected';
+    });
+
+    if (action === 'reject_all') {
+      const msg = String(req.body.coordinator_notes || '').trim();
+      if (!msg) return res.status(400).json({ error: 'coordinator_notes is required for reject_all' });
+      if (pastSubjectsRejectable.length === 0) {
+        return res.status(400).json({ error: 'No rejectable past subjects found for this current subject' });
+      }
+
+      const ids = pastSubjectsRejectable.map(ps => ps.pastSubject_id);
+      await models.PastApplicationSubject.update(
+        {
+          approval_status: 'rejected',
+          needs_sme_review: false,
+          coordinator_notes: msg,
+        },
+        { where: { pastSubject_id: { [Op.in]: ids } } }
+      );
+
+      // Notify student (generic)
+      await createNotification({
+        receiver_type: 'student',
+        receiver_id: application.student_id,
+        noti_type: 'subject_rejected',
+        noti_title: 'Update on your application',
+        noti_message: 'Your coordinator has responded to one of your credit transfer subjects.',
+        link_path: '/student/history',
+      });
+
+      return res.json({ message: 'Subjects rejected', rejectedPastSubjectIds: ids });
+    }
+
+    // For other actions, we operate on pending rows only
+    const pastSubjects = pastSubjectsPending;
     if (pastSubjects.length === 0) {
       return res.status(400).json({ error: 'No pending past subjects found for this current subject' });
     }
@@ -1395,19 +1510,8 @@ async function checkTemplate3ForCurrentSubject(req, res) {
       }
 
       const sentSubjects = [];
-      const coordinatorNotes = req.body.coordinator_notes || 'Sent all subjects to SME for review (many-to-one mapping)';
 
       for (const pastSubject of pastSubjects) {
-        // Avoid duplicate SME assignments within the process window for the same mapping key
-        const hasRecent = await hasRecentSmeAssignmentForMapping({
-          oldCampusId,
-          oldProgrammeName: application.prev_programme_name,
-          programId: application.program_id,
-          courseId,
-          oldSubjectCode: pastSubject.pastSubject_code,
-        });
-        if (hasRecent) continue;
-
         // Check if assignment already exists
         const existingAssignment = await models.SMEAssignment.findOne({
           where: {
@@ -1422,7 +1526,6 @@ async function checkTemplate3ForCurrentSubject(req, res) {
           await pastSubject.update({
             approval_status: 'needs_sme_review',
             needs_sme_review: true,
-            coordinator_notes: coordinatorNotes,
           });
 
           // Create SME assignment
@@ -1446,22 +1549,19 @@ async function checkTemplate3ForCurrentSubject(req, res) {
           await pastSubject.update({
             approval_status: 'needs_sme_review',
             needs_sme_review: true,
-            coordinator_notes: coordinatorNotes,
           });
         }
 
         sentSubjects.push(pastSubject.pastSubject_id);
-
-        // Mark other similar mappings as "SME is evaluating"
-        await markSimilarMappingsAsSmeEvaluating({
-          oldCampusId,
-          oldProgrammeName: application.prev_programme_name,
-          programId: application.program_id,
-          courseId,
-          oldSubjectCode: pastSubject.pastSubject_code,
-          coordinatorNotes: 'An SME is currently evaluating the same mapping',
-        });
       }
+
+      // Mark other similar mappings as "SME is evaluating" (subject-level)
+      await markSimilarMappingsAsSmeEvaluating({
+        oldCampusId,
+        oldProgrammeName: application.prev_programme_name,
+        programId: application.program_id,
+        courseId,
+      });
 
       // Notify SME only if there is at least 1 subject that truly requires SME
       if (sentSubjects.length > 0) {
@@ -1485,7 +1585,7 @@ async function checkTemplate3ForCurrentSubject(req, res) {
       return res.json({
         message: sentSubjects.length > 0
           ? `Sent ${sentSubjects.length} subject(s) to SME for review`
-          : `No subjects were sent to SME (already sent recently within ${getProcessWindowDays()} days)`,
+          : `No subjects were sent to SME`,
         sentSubjects,
         sme: {
           sme_id: sme.sme_id,
@@ -1722,6 +1822,7 @@ async function getStudentProfile(req, res) {
       ],
       attributes: [
         'student_id',
+        'student_identifier',
         'student_name',
         'student_email',
         'student_phone',
@@ -1736,9 +1837,370 @@ async function getStudentProfile(req, res) {
       return res.status(404).json({ error: 'Student not found' });
     }
 
-    res.json({ student });
+    const creditTransferApplicationCount = await models.CreditTransferApplication.count({
+      where: { student_id: studentId },
+    });
+
+    res.json({
+      student,
+      has_credit_transfer_applications: creditTransferApplicationCount > 0,
+    });
   } catch (error) {
     console.error('Get student profile error:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Student: update their own profile (name, email, phone, program, old campus, prev programme)
+async function updateStudentProfile(req, res) {
+  try {
+    const studentId = req.user.id;
+    if (!studentId || req.user.userType !== 'student') {
+      return res.status(403).json({ error: 'Only students can update their profile' });
+    }
+
+    if (req.body.campus_id !== undefined) {
+      return res.status(400).json({ error: 'campus_id cannot be set directly; it follows your program.' });
+    }
+
+    const {
+      student_name,
+      student_email,
+      student_phone,
+      student_identifier,
+      program_id,
+      old_campus_id,
+      prev_programme_name,
+    } = req.body;
+
+    const student = await models.Student.findByPk(studentId);
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+
+    const ctCount = await models.CreditTransferApplication.count({
+      where: { student_id: studentId },
+    });
+    const hasCt = ctCount > 0;
+
+    const patch = {};
+
+    if (student_name !== undefined) {
+      const v = String(student_name || '').trim();
+      if (!v) return res.status(400).json({ error: 'student_name cannot be empty' });
+      patch.student_name = v;
+    }
+
+    if (student_email !== undefined) {
+      const v = String(student_email || '').trim().toLowerCase();
+      if (!v) return res.status(400).json({ error: 'student_email cannot be empty' });
+      const current = String(student.student_email || '').trim().toLowerCase();
+      if (v !== current) {
+        const dupStudent = await models.Student.findOne({
+          where: { student_email: v, student_id: { [Op.ne]: studentId } },
+          attributes: ['student_id'],
+        });
+        if (dupStudent) {
+          return res.status(409).json({ error: 'That email is already in use by another student' });
+        }
+        const dupLecturer = await models.Lecturer.findOne({
+          where: { lecturer_email: v },
+          attributes: ['lecturer_id'],
+        });
+        if (dupLecturer) {
+          return res.status(409).json({ error: 'That email is already in use' });
+        }
+      }
+      patch.student_email = v;
+    }
+
+    if (student_identifier !== undefined) {
+      const v = String(student_identifier || '').trim();
+      if (!v) return res.status(400).json({ error: 'student_identifier cannot be empty' });
+      const current = student.student_identifier ? String(student.student_identifier).trim() : '';
+      if (v !== current) {
+        const dup = await models.Student.findOne({
+          where: { student_identifier: v, student_id: { [Op.ne]: studentId } },
+          attributes: ['student_id'],
+        });
+        if (dup) {
+          return res.status(409).json({ error: 'That student ID is already in use' });
+        }
+      }
+      patch.student_identifier = v;
+    }
+
+    if (student_phone !== undefined) {
+      patch.student_phone = String(student_phone || '').trim() || null;
+    }
+
+    if (program_id !== undefined) {
+      const newPid =
+        program_id === '' || program_id === null ? null : parseInt(program_id, 10);
+      const oldPid = student.program_id;
+      if (newPid !== oldPid) {
+        if (hasCt) {
+          return res.status(409).json({
+            error:
+              'You already have credit transfer applications. Program cannot be changed. Contact support if you need to correct your enrolment.',
+          });
+        }
+        if (newPid == null || Number.isNaN(newPid)) {
+          return res.status(400).json({ error: 'program_id is required' });
+        }
+        const program = await models.Program.findByPk(newPid, {
+          attributes: ['program_id', 'campus_id'],
+        });
+        if (!program) return res.status(404).json({ error: 'Program not found' });
+        patch.program_id = newPid;
+        patch.campus_id = program.campus_id;
+      }
+    }
+
+    if (old_campus_id !== undefined) {
+      const newOld =
+        old_campus_id === '' || old_campus_id === null ? null : parseInt(old_campus_id, 10);
+      const oldOld = student.old_campus_id;
+      if (newOld !== oldOld) {
+        if (hasCt) {
+          return res.status(409).json({
+            error:
+              'You already have credit transfer applications. Previous institution campus cannot be changed. Contact support if you need to correct it.',
+          });
+        }
+        if (newOld != null && !Number.isNaN(newOld)) {
+          const oldCampus = await models.StudentOldCampus.findByPk(newOld, {
+            attributes: ['old_campus_id'],
+          });
+          if (!oldCampus) return res.status(404).json({ error: 'Previous institution campus not found' });
+        }
+        patch.old_campus_id =
+          newOld == null || Number.isNaN(newOld) ? null : newOld;
+      }
+    }
+
+    if (prev_programme_name !== undefined) {
+      const v =
+        prev_programme_name == null || prev_programme_name === ''
+          ? null
+          : String(prev_programme_name).trim() || null;
+      const oldV = student.prev_programme_name
+        ? String(student.prev_programme_name).trim()
+        : null;
+      if (v !== oldV) {
+        if (hasCt) {
+          return res.status(409).json({
+            error:
+              'You already have credit transfer applications. Previous programme name cannot be changed. Contact support if you need to correct it.',
+          });
+        }
+        patch.prev_programme_name = v;
+      }
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: 'No changes provided' });
+    }
+
+    await student.update(patch);
+
+    const updated = await models.Student.findByPk(studentId, {
+      include: [
+        {
+          model: models.StudentOldCampus,
+          as: 'oldCampus',
+          attributes: ['old_campus_id', 'old_campus_name'],
+        },
+        {
+          model: models.Program,
+          as: 'program',
+          attributes: ['program_id', 'program_name', 'program_code'],
+        },
+        {
+          model: models.Campus,
+          as: 'campus',
+          attributes: ['campus_id', 'campus_name'],
+        },
+      ],
+      attributes: [
+        'student_id',
+        'student_identifier',
+        'student_name',
+        'student_email',
+        'student_phone',
+        'program_id',
+        'campus_id',
+        'old_campus_id',
+        'prev_programme_name',
+      ],
+    });
+
+    res.json({
+      message: 'Profile updated',
+      student: updated,
+      has_credit_transfer_applications: hasCt,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Student: reapply for ONE current subject in an existing application (no new CT created)
+async function reapplySubject(req, res) {
+  try {
+    const studentId = req.user?.id;
+    if (!studentId || req.user?.userType !== 'student') {
+      return res.status(403).json({ error: 'Only students can perform this action' });
+    }
+
+    const { ct_id, application_subject_id } = req.body;
+    if (!ct_id || !application_subject_id) {
+      return res.status(400).json({ error: 'ct_id and application_subject_id are required' });
+    }
+
+    const application = await models.CreditTransferApplication.findOne({
+      where: { ct_id, student_id: studentId },
+      include: [
+        { model: models.Program, as: 'program', attributes: ['program_id', 'campus_id'], required: false },
+        { model: models.Coordinator, as: 'coordinator', attributes: ['coordinator_id', 'lecturer_id'], required: false },
+      ],
+    });
+    if (!application) return res.status(404).json({ error: 'Application not found' });
+
+    // Enforce CT process window (student campus)
+    const ctOpen = await svc.processWindow.isCtProcessOpenForCampus(application.program?.campus_id);
+    if (!ctOpen) {
+      return res.status(403).json({ error: 'Credit transfer process window is closed for your campus.' });
+    }
+
+    const subject = await models.NewApplicationSubject.findOne({
+      where: { application_subject_id, ct_id: application.ct_id },
+      include: [{ model: models.PastApplicationSubject, as: 'pastApplicationSubjects', required: false }],
+    });
+    if (!subject) return res.status(404).json({ error: 'Current subject not found for this application' });
+
+    // Only allow reapply if there is at least 1 rejected past subject (coordinator already decided)
+    const hasRejected = (subject.pastApplicationSubjects || []).some(
+      (p) => String(p.approval_status || '').toLowerCase() === 'rejected'
+    );
+    if (!hasRejected) {
+      return res.status(409).json({ error: 'This subject is not eligible for reapply.' });
+    }
+
+    // Parse mapping payload (single row format)
+    let mapping = null;
+    if (req.body.mapping) {
+      try {
+        mapping = typeof req.body.mapping === 'string' ? JSON.parse(req.body.mapping) : req.body.mapping;
+      } catch {
+        mapping = null;
+      }
+    }
+    if (!mapping || !Array.isArray(mapping.pastSubjects)) {
+      return res.status(400).json({ error: 'mapping (with pastSubjects[]) is required' });
+    }
+
+    // Delete existing past subjects for this current subject, then recreate
+    await models.PastApplicationSubject.destroy({ where: { application_subject_id: subject.application_subject_id } });
+
+    // Save uploaded PDF files from req.files (global multer)
+    const files = req.files || [];
+    const usedFiles = new Set();
+
+    const saved = [];
+    for (const ps of mapping.pastSubjects) {
+      const code = ps.code || '';
+      const name = ps.name || '';
+      const grade = ps.grade || '';
+      const credit = ps.credit || '';
+      const syllabusFileName = ps.syllabus;
+      const syllabusExistingPath = ps.syllabus_existing_path || ps.syllabusExistingPath || null;
+
+      let syllabusPath = null;
+      let originalFilename = null;
+
+      if (syllabusFileName) {
+        const uploadPath = 'uploads/syllabi';
+        if (!fs.existsSync(uploadPath)) fs.mkdirSync(uploadPath, { recursive: true });
+
+        const uploadedFile = files.find((f, idx) => f.originalname === syllabusFileName && !usedFiles.has(idx));
+        if (uploadedFile) {
+          usedFiles.add(files.indexOf(uploadedFile));
+          const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+          const filename = `syllabus-${uniqueSuffix}${path.extname(uploadedFile.originalname)}`;
+          const filePath = path.join(uploadPath, filename);
+          fs.writeFileSync(filePath, uploadedFile.buffer);
+          syllabusPath = `/uploads/syllabi/${filename}`;
+          originalFilename = uploadedFile.originalname;
+        }
+      }
+
+      // If student didn't re-upload the old syllabus, preserve the existing path.
+      // This is safe because reapply recreates rows but doesn't delete files from disk.
+      if (!syllabusPath && syllabusExistingPath) {
+        syllabusPath = syllabusExistingPath;
+      }
+
+      const created = await models.PastApplicationSubject.create({
+        pastSubject_code: code,
+        pastSubject_name: name,
+        pastSubject_grade: grade,
+        pastSubject_credit: credit ? parseInt(credit, 10) : null,
+        pastSubject_syllabus_path: syllabusPath,
+        original_filename: originalFilename,
+        approval_status: 'pending',
+        template3_id: null,
+        similarity_percentage: null,
+        needs_sme_review: false,
+        sme_review_notes: null,
+        coordinator_notes: null,
+        application_subject_id: subject.application_subject_id,
+      });
+      saved.push(created);
+    }
+
+    // If there's an ACTIVE SME evaluation for the same subject-level key, reflect it immediately in coordinator view.
+    // This avoids requiring the coordinator to re-send the exact same mapping while SME is already evaluating it.
+    try {
+      const student = await models.Student.findByPk(studentId, { attributes: ['old_campus_id'] });
+      const oldCampusId = student?.old_campus_id || null;
+      const courseId = subject.course_id || null;
+      if (oldCampusId && courseId && application.prev_programme_name) {
+        const hasActive = await hasActiveSmeAssignmentForSubjectKey({
+          oldCampusId,
+          oldProgrammeName: application.prev_programme_name,
+          programId: application.program_id,
+          courseId,
+        });
+        if (hasActive) {
+          for (const created of saved) {
+            if (String(created.approval_status || '').toLowerCase() !== 'pending') continue;
+            await created.update({
+              approval_status: 'needs_sme_review',
+              needs_sme_review: true,
+              coordinator_notes: 'An SME is currently evaluating the same mapping',
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to auto-mark SME evaluating for reapply:', e?.message || e);
+    }
+
+    // Notify coordinator
+    if (application.coordinator?.lecturer_id) {
+      const student = await models.Student.findByPk(studentId, { attributes: ['student_name'] });
+      await createNotification({
+        receiver_type: 'lecturer',
+        receiver_id: application.coordinator.lecturer_id,
+        noti_type: 'student_reapply',
+        noti_title: 'Student resubmitted a subject',
+        noti_message: `${student?.student_name || 'A student'} resubmitted past subjects for a credit transfer subject.`,
+        link_path: `/coordinator/review/${application.ct_id}`,
+      });
+    }
+
+    res.json({ message: 'Reapply submitted', ct_id: application.ct_id, application_subject_id: subject.application_subject_id });
+  } catch (error) {
+    console.error('reapplySubject error:', error);
     res.status(500).json({ error: error.message });
   }
 }
@@ -1747,6 +2209,8 @@ module.exports = {
   submitApplication,
   getStudentApplications,
   getStudentProfile,
+  updateStudentProfile,
+  reapplySubject,
   getCoordinatorApplications,
   updateApplication,
   reviewSubject,
