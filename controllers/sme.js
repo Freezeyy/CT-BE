@@ -383,7 +383,16 @@ async function getSubjectDetails(req, res) {
           include: [{
             model: models.Template3,
             as: 'template3',
-            attributes: ['template3_id', 'old_subject_code', 'old_subject_name', 'new_subject_code', 'new_subject_name', 'similarity_percentage'],
+            attributes: [
+              'template3_id',
+              'old_subject_code',
+              'old_subject_name',
+              'new_subject_code',
+              'new_subject_name',
+              'similarity_percentage',
+              'sme_review_notes',
+              'topics_comparison',
+            ],
             required: false,
           }],
         },
@@ -410,21 +419,32 @@ async function getSubjectDetails(req, res) {
     // Get the new institution course details
     const newCourse = sme.course;
 
-    // Transform past subjects
-    const pastSubjects = newApplicationSubject.pastApplicationSubjects.map(ps => ({
-      pastSubject_id: ps.pastSubject_id,
-      pastSubject_code: ps.pastSubject_code,
-      pastSubject_name: ps.pastSubject_name,
-      pastSubject_grade: ps.pastSubject_grade,
-      pastSubject_credit: ps.pastSubject_credit,
-      pastSubject_syllabus_path: ps.pastSubject_syllabus_path,
-      original_filename: ps.original_filename,
-      approval_status: ps.approval_status,
-      similarity_percentage: ps.similarity_percentage,
-      sme_review_notes: ps.sme_review_notes,
-      coordinator_notes: ps.coordinator_notes,
-      template3: ps.template3,
-    }));
+    // Transform past subjects (parse stored SME topics comparison from Template3)
+    const pastSubjects = newApplicationSubject.pastApplicationSubjects.map((ps) => {
+      let template3 = ps.template3 ? ps.template3.toJSON() : null;
+      if (template3?.topics_comparison && typeof template3.topics_comparison === 'string') {
+        try {
+          template3.topics_comparison = JSON.parse(template3.topics_comparison);
+        } catch {
+          template3.topics_comparison = null;
+        }
+      }
+      return {
+        pastSubject_id: ps.pastSubject_id,
+        pastSubject_code: ps.pastSubject_code,
+        pastSubject_name: ps.pastSubject_name,
+        pastSubject_grade: ps.pastSubject_grade,
+        pastSubject_credit: ps.pastSubject_credit,
+        pastSubject_syllabus_path: ps.pastSubject_syllabus_path,
+        original_filename: ps.original_filename,
+        approval_status: ps.approval_status,
+        sme_decision_status: ps.sme_decision_status,
+        similarity_percentage: ps.similarity_percentage,
+        sme_review_notes: ps.sme_review_notes,
+        coordinator_notes: ps.coordinator_notes,
+        template3,
+      };
+    });
 
     res.json({
       pastSubjects, // Array of all past subjects

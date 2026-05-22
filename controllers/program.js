@@ -2,6 +2,84 @@ const models = require('../models');
 const path = require('path');
 const fs = require('fs');
 
+async function fetchProgramCoursesForStructure(programId) {
+  const rows = await models.ProgramCourse.findAll({
+    where: { program_id: programId },
+    include: [
+      {
+        model: models.Course,
+        as: 'course',
+        attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'category_id'],
+        include: [
+          {
+            model: models.Category,
+            as: 'category',
+            attributes: ['category_id', 'category_name'],
+            required: false,
+          },
+        ],
+      },
+      {
+        model: models.Course,
+        as: 'prerequisiteCourse',
+        attributes: ['course_id', 'course_code', 'course_name'],
+        required: false,
+      },
+    ],
+    order: [
+      ['academic_year', 'ASC'],
+      ['semester_number', 'ASC'],
+      ['sort_order', 'ASC'],
+      ['program_course_id', 'ASC'],
+    ],
+  });
+
+  return rows.map((pc) => {
+    const c = pc.course;
+    if (!c) return null;
+    const prereq = pc.prerequisiteCourse;
+    return {
+      course_id: c.course_id,
+      course_code: c.course_code,
+      course_name: c.course_name,
+      course_credit: c.course_credit,
+      category_id: c.category_id,
+      category: c.category,
+      academic_year: pc.academic_year,
+      semester_number: pc.semester_number,
+      sort_order: pc.sort_order,
+      prerequisite_course_id: pc.prerequisite_course_id,
+      prerequisite_course: prereq
+        ? {
+            course_id: prereq.course_id,
+            course_code: prereq.course_code,
+            course_name: prereq.course_name,
+          }
+        : null,
+    };
+  }).filter(Boolean);
+}
+
+async function upsertProgramCoursePlacement(programId, courseId, placement) {
+  const [row] = await models.ProgramCourse.findOrCreate({
+    where: { program_id: programId, course_id: courseId },
+    defaults: {
+      program_id: programId,
+      course_id: courseId,
+      academic_year: placement.academic_year,
+      semester_number: placement.semester_number,
+      sort_order: placement.sort_order,
+      prerequisite_course_id: placement.prerequisite_course_id,
+    },
+  });
+  await row.update({
+    academic_year: placement.academic_year,
+    semester_number: placement.semester_number,
+    sort_order: placement.sort_order,
+    prerequisite_course_id: placement.prerequisite_course_id,
+  });
+}
+
 // Get program structure (and optionally courses) for students and coordinators
 // Query params: includeCourses=true to also get courses
 async function getProgramStructure(req, res) {
@@ -67,29 +145,8 @@ async function getProgramStructure(req, res) {
 
     const response = { program };
 
-    // If courses are requested, fetch and include them via the many-to-many relationship
     if (includeCourses) {
-      const courses = await models.Course.findAll({
-        attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'category_id'],
-        include: [
-          {
-            model: models.Program,
-            as: 'programs',
-            where: { program_id: programId },
-            attributes: [],
-            through: { attributes: [] },
-            required: true,
-          },
-          {
-            model: models.Category,
-            as: 'category',
-            attributes: ['category_id', 'category_name'],
-            required: false,
-          },
-        ],
-        order: [['course_name', 'ASC']],
-      });
-      response.courses = courses;
+      response.courses = await fetchProgramCoursesForStructure(programId);
     }
 
     res.json(response);
@@ -310,7 +367,17 @@ async function updateCourses(req, res) {
     // Process each course: create or update, then associate with program
     const processedCourses = [];
     for (const courseData of coursesArray) {
-      const { course_id, course_code, course_name, course_credit, category_id } = courseData;
+      const {
+        course_id,
+        course_code,
+        course_name,
+        course_credit,
+        category_id,
+        academic_year,
+        semester_number,
+        sort_order,
+        prerequisite_course_id,
+      } = courseData;
 
       // Validate required fields
       if (!course_code || !course_name) {
@@ -318,6 +385,24 @@ async function updateCourses(req, res) {
       }
 
       const courseCredit = course_credit ? parseInt(course_credit) : null;
+      const placement = {
+        academic_year:
+          academic_year != null && academic_year !== ''
+            ? parseInt(academic_year, 10)
+            : null,
+        semester_number:
+          semester_number != null && semester_number !== ''
+            ? parseInt(semester_number, 10)
+            : null,
+        sort_order:
+          sort_order != null && sort_order !== ''
+            ? parseInt(sort_order, 10)
+            : 0,
+        prerequisite_course_id:
+          prerequisite_course_id != null && prerequisite_course_id !== ''
+            ? parseInt(prerequisite_course_id, 10)
+            : null,
+      };
       let course;
 
       if (course_id && existingCourseIds.has(course_id)) {
@@ -332,6 +417,7 @@ async function updateCourses(req, res) {
           { where: { course_id } }
         );
         course = await models.Course.findByPk(course_id);
+        await upsertProgramCoursePlacement(programId, course_id, placement);
         processedCourses.push(course_id);
       } else if (course_id) {
         // Course exists but is not associated with this program yet
@@ -347,6 +433,7 @@ async function updateCourses(req, res) {
           });
           // Associate with this program
           await program.addCourse(course);
+          await upsertProgramCoursePlacement(programId, course_id, placement);
           processedCourses.push(course_id);
         } else {
           // Course ID provided but doesn't exist - create new
@@ -357,6 +444,7 @@ async function updateCourses(req, res) {
             campus_id: campusId,
           });
           await program.addCourse(course);
+          await upsertProgramCoursePlacement(programId, course.course_id, placement);
           processedCourses.push(course.course_id);
         }
       } else {
@@ -382,6 +470,7 @@ async function updateCourses(req, res) {
             course_credit: courseCredit,
             category_id: category_id || null,
           });
+          await upsertProgramCoursePlacement(programId, existingCourse.course_id, placement);
           processedCourses.push(existingCourse.course_id);
         } else {
           // Course doesn't exist - create new one
@@ -394,21 +483,13 @@ async function updateCourses(req, res) {
           });
           // Associate with this program
           await program.addCourse(course);
+          await upsertProgramCoursePlacement(programId, course.course_id, placement);
           processedCourses.push(course.course_id);
         }
       }
     }
 
-    // Fetch updated courses list for this program
-    const updatedProgram = await models.Program.findByPk(programId, {
-      include: [{
-        model: models.Course,
-        as: 'courses',
-        attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
-        through: { attributes: [] },
-      }],
-    });
-    const updatedCourses = updatedProgram.courses || [];
+    const updatedCourses = await fetchProgramCoursesForStructure(programId);
 
     // Build response
     const response = {

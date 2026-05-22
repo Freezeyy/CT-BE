@@ -58,8 +58,187 @@ async function findActiveTemplate3Match({
 
   return await models.Template3.findOne({
     where: { [Op.and]: whereAnd },
-    attributes: ['template3_id', 'similarity_percentage', 'course_id'],
+    attributes: [
+      'template3_id',
+      'similarity_percentage',
+      'course_id',
+      'old_subject_code',
+      'old_subject_name',
+      'new_subject_code',
+      'new_subject_name',
+    ],
   });
+}
+
+function normalizeSubjectCode(code) {
+  return String(code || '').trim().toUpperCase();
+}
+
+function buildTemplate3ProgrammeNameConditions(oldProgrammeName, isPostgres) {
+  if (!oldProgrammeName) return [];
+  if (isPostgres) {
+    return [{ old_programme_name: { [Op.iLike]: `%${oldProgrammeName}%` } }];
+  }
+  return [
+    Sequelize.where(
+      Sequelize.fn('LOWER', Sequelize.col('old_programme_name')),
+      { [Op.like]: `%${String(oldProgrammeName).toLowerCase()}%` },
+    ),
+  ];
+}
+
+/** All active Template3 rows for one UniKL course (may be multiple past-subject codes). */
+async function getRequiredTemplate3MappingsForCourse({
+  oldCampusId,
+  programId,
+  oldProgrammeName,
+  courseId,
+}) {
+  if (!oldCampusId || !programId || !courseId) return [];
+
+  const env = process.env.NODE_ENV || 'development';
+  const config = require('../config/config')[env];
+  const isPostgres = config.dialect === 'postgres';
+
+  const whereAnd = [
+    { old_campus_id: oldCampusId },
+    { program_id: programId },
+    { course_id: courseId },
+    { is_active: true },
+    ...buildTemplate3ProgrammeNameConditions(oldProgrammeName, isPostgres),
+  ];
+
+  return models.Template3.findAll({
+    where: { [Op.and]: whereAnd },
+    attributes: [
+      'template3_id',
+      'old_subject_code',
+      'old_subject_name',
+      'new_subject_code',
+      'new_subject_name',
+      'similarity_percentage',
+      'course_id',
+    ],
+    include: [{
+      model: models.Course,
+      as: 'course',
+      attributes: ['course_id', 'course_name', 'course_code'],
+    }],
+    order: [['old_subject_code', 'ASC']],
+  });
+}
+
+/**
+ * Many-to-one: a UniKL course may require several past-subject codes in Template3.
+ * allMatch is true only when every submitted pending past subject matches this course
+ * AND every required Template3 code for this course appears in the application.
+ */
+async function evaluateTemplate3Bundle({
+  application,
+  newApplicationSubject,
+  pastSubjects,
+  oldCampusId,
+}) {
+  const env = process.env.NODE_ENV || 'development';
+  const config = require('../config/config')[env];
+  const isPostgres = config.dialect === 'postgres';
+
+  const courseId =
+    newApplicationSubject.course_id || newApplicationSubject.course?.course_id || null;
+
+  const requiredMappings = courseId
+    ? await getRequiredTemplate3MappingsForCourse({
+        oldCampusId,
+        programId: application.program_id,
+        oldProgrammeName: application.prev_programme_name,
+        courseId,
+      })
+    : [];
+
+  const requiredCodes = [
+    ...new Set(requiredMappings.map((m) => normalizeSubjectCode(m.old_subject_code)).filter(Boolean)),
+  ];
+
+  const submittedCodes = pastSubjects
+    .map((p) => normalizeSubjectCode(p.pastSubject_code))
+    .filter(Boolean);
+
+  const missingRequiredCodes = requiredCodes.filter(
+    (code) => !submittedCodes.includes(code),
+  );
+
+  const results = [];
+
+  for (const pastSubject of pastSubjects) {
+    let template3Match = null;
+    if (courseId) {
+      template3Match = await findActiveTemplate3Match({
+        oldCampusId,
+        oldProgrammeName: application.prev_programme_name,
+        programId: application.program_id,
+        courseId,
+        oldSubjectCode: pastSubject.pastSubject_code,
+      });
+    } else {
+      const template3WhereConditions = [
+        { old_campus_id: oldCampusId },
+        { program_id: application.program_id },
+        { is_active: true },
+        { old_subject_code: pastSubject.pastSubject_code },
+        ...buildTemplate3ProgrammeNameConditions(application.prev_programme_name, isPostgres),
+      ];
+      template3Match = await models.Template3.findOne({
+        where: { [Op.and]: template3WhereConditions },
+        include: [{
+          model: models.Course,
+          as: 'course',
+          attributes: ['course_id', 'course_name', 'course_code'],
+        }],
+      });
+    }
+
+    const hasMatch = !!template3Match;
+    results.push({
+      pastSubject_id: pastSubject.pastSubject_id,
+      pastSubject_code: pastSubject.pastSubject_code,
+      pastSubject_name: pastSubject.pastSubject_name,
+      hasMatch,
+      template3: template3Match
+        ? {
+            template3_id: template3Match.template3_id,
+            old_subject_code: template3Match.old_subject_code,
+            old_subject_name: template3Match.old_subject_name,
+            new_subject_code: template3Match.new_subject_code,
+            new_subject_name: template3Match.new_subject_name,
+            course: template3Match.course,
+            similarity_percentage: template3Match.similarity_percentage,
+          }
+        : null,
+    });
+  }
+
+  const allSubmittedMatch =
+    results.length > 0 && results.every((r) => r.hasMatch);
+  const allRequiredPresent =
+    requiredCodes.length === 0 || missingRequiredCodes.length === 0;
+  const allMatch = allSubmittedMatch && allRequiredPresent;
+  const someMatch = results.some((r) => r.hasMatch);
+
+  return {
+    results,
+    allMatch,
+    someMatch,
+    requiredMappings: requiredMappings.map((m) => ({
+      template3_id: m.template3_id,
+      old_subject_code: m.old_subject_code,
+      old_subject_name: m.old_subject_name,
+      course: m.course,
+    })),
+    requiredCount: requiredCodes.length,
+    missingRequiredCodes,
+    matchedCount: results.filter((r) => r.hasMatch).length,
+    coverageIncomplete: requiredCodes.length > 0 && missingRequiredCodes.length > 0,
+  };
 }
 
 function daysToMs(days) {
@@ -941,50 +1120,20 @@ async function reviewSubject(req, res) {
       return res.status(400).json({ error: 'Old campus not found. Please set student\'s old_campus_id or prev_campus_name first.' });
     }
 
-    // Check Template3
-    // Match by: old_campus_id, old_programme_name (case-insensitive partial match), program_id, 
-    // and old_subject_code (the old institution's code that student entered)
-    const env = process.env.NODE_ENV || 'development';
-    const config = require('../config/config')[env];
-    const isPostgres = config.dialect === 'postgres';
+    const courseId =
+      pastSubject.newApplicationSubject?.course_id ||
+      pastSubject.newApplicationSubject?.course?.course_id ||
+      null;
 
-    // Build where clause for Template3 matching
-    const template3WhereConditions = [
-      { old_campus_id: oldCampusId },
-      { program_id: application.program_id },
-      { is_active: true },
-      { old_subject_code: pastSubject.pastSubject_code }, // Match old institution's code
-    ];
-
-    // Add old_programme_name with case-insensitive partial matching
-    if (application.prev_programme_name) {
-      if (isPostgres) {
-        template3WhereConditions.push({
-          old_programme_name: { [Op.iLike]: `%${application.prev_programme_name}%` },
-        });
-      } else {
-        // MySQL/MariaDB: use Sequelize.where with column name (no table prefix needed in where clause)
-        template3WhereConditions.push(
-          Sequelize.where(
-            Sequelize.fn('LOWER', Sequelize.col('old_programme_name')),
-            { [Op.like]: `%${application.prev_programme_name.toLowerCase()}%` }
-          )
-        );
-      }
-    }
-
-    const template3Where = {
-      [Op.and]: template3WhereConditions,
-    };
-
-    const template3Match = await models.Template3.findOne({
-      where: template3Where,
-      include: [{
-        model: models.Course,
-        as: 'course',
-        attributes: ['course_id', 'course_name', 'course_code'],
-      }],
-    });
+    const template3Match = courseId
+      ? await findActiveTemplate3Match({
+          oldCampusId,
+          oldProgrammeName: application.prev_programme_name,
+          programId: application.program_id,
+          courseId,
+          oldSubjectCode: pastSubject.pastSubject_code,
+        })
+      : null;
 
     if (action === 'check_template3') {
       // Just return the check result
@@ -1356,75 +1505,22 @@ async function checkTemplate3ForCurrentSubject(req, res) {
       return res.status(400).json({ error: 'Old campus not found. Please set student\'s old_campus_id or prev_campus_name first.' });
     }
 
-    // Check Template3 for each past subject
-    const env = process.env.NODE_ENV || 'development';
-    const config = require('../config/config')[env];
-    const isPostgres = config.dialect === 'postgres';
-
-    const results = [];
-    let allMatch = true;
-    let someMatch = false;
-
-    for (const pastSubject of pastSubjects) {
-      const template3WhereConditions = [
-        { old_campus_id: oldCampusId },
-        { program_id: application.program_id },
-        { is_active: true },
-        { old_subject_code: pastSubject.pastSubject_code },
-      ];
-
-      // Add old_programme_name with case-insensitive partial matching
-      if (application.prev_programme_name) {
-        if (isPostgres) {
-          template3WhereConditions.push({
-            old_programme_name: { [Op.iLike]: `%${application.prev_programme_name}%` },
-          });
-        } else {
-          template3WhereConditions.push(
-            Sequelize.where(
-              Sequelize.fn('LOWER', Sequelize.col('old_programme_name')),
-              { [Op.like]: `%${application.prev_programme_name.toLowerCase()}%` }
-            )
-          );
-        }
-      }
-
-      const template3Where = {
-        [Op.and]: template3WhereConditions,
-      };
-
-      const template3Match = await models.Template3.findOne({
-        where: template3Where,
-        include: [{
-          model: models.Course,
-          as: 'course',
-          attributes: ['course_id', 'course_name', 'course_code'],
-        }],
-      });
-
-      const hasMatch = !!template3Match;
-      if (hasMatch) {
-        someMatch = true;
-      } else {
-        allMatch = false;
-      }
-
-      results.push({
-        pastSubject_id: pastSubject.pastSubject_id,
-        pastSubject_code: pastSubject.pastSubject_code,
-        pastSubject_name: pastSubject.pastSubject_name,
-        hasMatch,
-        template3: template3Match ? {
-          template3_id: template3Match.template3_id,
-          old_subject_code: template3Match.old_subject_code,
-          old_subject_name: template3Match.old_subject_name,
-          new_subject_code: template3Match.new_subject_code,
-          new_subject_name: template3Match.new_subject_name,
-          course: template3Match.course,
-          similarity_percentage: template3Match.similarity_percentage,
-        } : null,
-      });
-    }
+    const evaluation = await evaluateTemplate3Bundle({
+      application,
+      newApplicationSubject,
+      pastSubjects,
+      oldCampusId,
+    });
+    const {
+      results,
+      allMatch,
+      someMatch,
+      requiredMappings,
+      requiredCount,
+      missingRequiredCodes,
+      matchedCount,
+      coverageIncomplete,
+    } = evaluation;
 
     if (action === 'check_template3') {
       return res.json({
@@ -1438,8 +1534,22 @@ async function checkTemplate3ForCurrentSubject(req, res) {
         allMatch,
         someMatch,
         totalSubjects: pastSubjects.length,
-        matchedCount: results.filter(r => r.hasMatch).length,
+        matchedCount,
+        requiredMappings,
+        requiredCount,
+        missingRequiredCodes,
+        coverageIncomplete,
       });
+    }
+
+    if (action === 'approve_all') {
+      if (!allMatch) {
+        const detail =
+          missingRequiredCodes?.length > 0
+            ? `Missing required previous course(s) in this application: ${missingRequiredCodes.join(', ')}. Template3 defines ${requiredCount} past subject(s) for this UniKL course.`
+            : 'Not all submitted previous courses have a Template3 mapping for this UniKL course.';
+        return res.status(400).json({ error: detail, missingRequiredCodes, requiredCount });
+      }
     }
 
     if (action === 'approve_all' && allMatch) {

@@ -15,6 +15,10 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'course_id',
         as: 'course',
       });
+      this.belongsTo(models.Course, {
+        foreignKey: 'prerequisite_course_id',
+        as: 'prerequisiteCourse',
+      });
     }
   }
   ProgramCourse.init({
@@ -25,6 +29,10 @@ module.exports = (sequelize, DataTypes) => {
     },
     program_id: DataTypes.INTEGER,
     course_id: DataTypes.INTEGER,
+    academic_year: DataTypes.INTEGER,
+    semester_number: DataTypes.INTEGER,
+    sort_order: DataTypes.INTEGER,
+    prerequisite_course_id: DataTypes.INTEGER,
   }, {
     sequelize,
     modelName: 'ProgramCourse',
