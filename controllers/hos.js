@@ -153,7 +153,7 @@ async function listMyHosReviews(req, res) {
               model: models.CreditTransferApplication,
               as: 'creditTransferApplication',
               include: [
-                { model: models.Student, as: 'student', attributes: ['student_id', 'student_name', 'student_email'], required: false },
+                { model: models.Student, as: 'student', attributes: ['student_id', 'student_name', 'student_email', 'student_identifier'], required: false },
                 { model: models.Program, as: 'program', attributes: ['program_id', 'program_code', 'program_name'], required: false },
               ],
               required: false,
@@ -162,7 +162,10 @@ async function listMyHosReviews(req, res) {
           required: false,
         },
       ],
-      order: [['createdAt', 'DESC']],
+      order:
+        status === 'pending'
+          ? [['createdAt', 'DESC']]
+          : [['decided_at', 'DESC'], ['createdAt', 'DESC']],
     });
 
     res.json({ reviews });
@@ -184,8 +187,36 @@ async function getHosReviewDetail(req, res) {
           model: models.NewApplicationSubject,
           as: 'newApplicationSubject',
           include: [
-            { model: models.Course, as: 'course', attributes: ['course_id', 'course_code', 'course_name', 'course_credit'], required: false },
-            { model: models.PastApplicationSubject, as: 'pastApplicationSubjects', required: false },
+            {
+              model: models.Course,
+              as: 'course',
+              attributes: ['course_id', 'course_code', 'course_name', 'course_credit', 'syllabus'],
+              required: false,
+            },
+            {
+              model: models.PastApplicationSubject,
+              as: 'pastApplicationSubjects',
+              required: false,
+              include: [{
+                model: models.Template3,
+                as: 'template3',
+                attributes: ['template3_id', 'similarity_percentage', 'sme_review_notes'],
+                required: false,
+              }],
+              attributes: [
+                'pastSubject_id',
+                'pastSubject_code',
+                'pastSubject_name',
+                'pastSubject_grade',
+                'pastSubject_credit',
+                'pastSubject_syllabus_path',
+                'approval_status',
+                'sme_decision_status',
+                'template3_id',
+                'similarity_percentage',
+                'sme_review_notes',
+              ],
+            },
             {
               model: models.CreditTransferApplication,
               as: 'creditTransferApplication',
@@ -258,15 +289,12 @@ async function decideHosReview(req, res) {
       where: { coordinator_id: review.coordinator_id },
       include: [{ model: models.Lecturer, as: 'lecturer', attributes: ['lecturer_id', 'lecturer_name'], required: false }],
     });
-    const hosLecturer = await models.Lecturer.findByPk(req.user.id, { attributes: ['lecturer_name'] });
-    const hosName = hosLecturer?.lecturer_name || 'Head of Section';
-
     const subj = await models.NewApplicationSubject.findByPk(review.application_subject_id, {
       include: [{ model: models.Course, as: 'course', attributes: ['course_code', 'course_name'], required: false }],
     });
     const subjectName = (subj?.course?.course_code && subj?.course?.course_name)
       ? `${subj.course.course_code} ${subj.course.course_name}`
-      : (subj?.application_subject_name || 'a subject');
+      : (subj?.application_subject_name || 'the UniKL course');
 
     if (coordinator?.lecturer?.lecturer_id) {
       await createNotification({
@@ -274,7 +302,10 @@ async function decideHosReview(req, res) {
         receiver_id: coordinator.lecturer.lecturer_id,
         noti_type: 'hos_decision',
         noti_title: 'HOS decision recorded',
-        noti_message: `${hosName} ${nextStatus === 'hos_approved' ? 'approved' : 'rejected'} ${subjectName}.`,
+        noti_message:
+          nextStatus === 'hos_approved'
+            ? `HOS approved the credit transfer for ${subjectName}.`
+            : `HOS rejected the credit transfer for ${subjectName}.`,
         link_path: `/coordinator/application/${review.ct_id}`,
       });
     }
@@ -285,8 +316,11 @@ async function decideHosReview(req, res) {
         receiver_type: 'student',
         receiver_id: application.student_id,
         noti_type: 'hos_decision',
-        noti_title: 'Your application was updated',
-        noti_message: `A decision has been made for ${subjectName}.`,
+        noti_title: 'HOS decision on your application',
+        noti_message:
+          nextStatus === 'hos_approved'
+            ? `Your credit transfer for ${subjectName} was approved by HOS. Refer to ECITIE for next steps.`
+            : `Your credit transfer for ${subjectName} was not approved by HOS. Please check your application history.`,
         link_path: '/student/history',
       });
     }

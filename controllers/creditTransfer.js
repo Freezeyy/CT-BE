@@ -850,11 +850,9 @@ async function submitApplication(req, res) {
 
     // Notify coordinator when an application is submitted (not draft)
     if (!isDraft) {
-      const student = await models.Student.findByPk(studentId, { attributes: ['student_name'] });
       const coordinatorLecturer = await models.Lecturer.findByPk(coordinator.lecturer_id, {
-        attributes: ['lecturer_id', 'lecturer_name'],
+        attributes: ['lecturer_id'],
       });
-      const studentName = student?.student_name || 'A student';
       const coordinatorLecturerId = coordinatorLecturer?.lecturer_id || coordinator.lecturer_id;
 
       await createNotification({
@@ -862,7 +860,7 @@ async function submitApplication(req, res) {
         receiver_id: coordinatorLecturerId,
         noti_type: 'application_submitted',
         noti_title: 'New credit transfer application',
-        noti_message: `${studentName} submitted a credit transfer application for your review.`,
+        noti_message: 'A new credit transfer application was submitted and is ready for your review.',
         link_path: '/coordinator/application',
       });
     }
@@ -1001,9 +999,8 @@ async function getCoordinatorApplications(req, res) {
             {
               model: models.HosReview,
               as: 'hosReviews',
-              attributes: ['hos_review_id', 'status', 'createdAt'],
+              attributes: ['hos_review_id', 'status', 'createdAt', 'decided_at'],
               required: false,
-              where: { status: 'pending' },
             },
             {
               model: models.SMEAssignment,
@@ -1028,7 +1025,7 @@ async function getCoordinatorApplications(req, res) {
             {
               model: models.PastApplicationSubject,
               as: 'pastApplicationSubjects',
-              attributes: ['pastSubject_id', 'pastSubject_code', 'pastSubject_name', 'pastSubject_grade', 'pastSubject_credit', 'pastSubject_syllabus_path', 'original_filename', 'approval_status', 'template3_id', 'similarity_percentage', 'needs_sme_review', 'sme_review_notes', 'coordinator_notes', 'application_subject_id'],
+              attributes: ['pastSubject_id', 'pastSubject_code', 'pastSubject_name', 'pastSubject_grade', 'pastSubject_credit', 'pastSubject_syllabus_path', 'original_filename', 'approval_status', 'sme_decision_status', 'template3_id', 'similarity_percentage', 'needs_sme_review', 'sme_review_notes', 'coordinator_notes', 'application_subject_id'],
             },
           ],
         },
@@ -1318,17 +1315,12 @@ async function reviewSubject(req, res) {
         createdCount += 1;
       }
 
-      // Notify SME (lecturer) about new task
-      const coordinatorLecturer = await models.Lecturer.findByPk(lecturerId, {
-        attributes: ['lecturer_name'],
-      });
-      const coordinatorName = coordinatorLecturer?.lecturer_name || 'Coordinator';
       await createNotification({
         receiver_type: 'lecturer',
         receiver_id: sme.lecturer?.lecturer_id,
         noti_type: 'sme_task_assigned',
         noti_title: 'New SME evaluation task',
-        noti_message: `${coordinatorName} sent you a task to evaluate a credit transfer subject. Due: ${dueAt.toISOString().slice(0, 10)}.`,
+        noti_message: `You have a new SME credit transfer evaluation task. Due date: ${dueAt.toISOString().slice(0, 10)}.`,
         link_path: '/expert/assignments',
       });
 
@@ -1471,20 +1463,14 @@ async function checkTemplate3ForCurrentSubject(req, res) {
         receiver_id: application.student_id,
         noti_type: 'subject_rejected',
         noti_title: 'Update on your application',
-        noti_message: 'Your coordinator has responded to one of your credit transfer subjects.',
+        noti_message: 'A credit transfer subject was reviewed by the coordinator. Please check your application history.',
         link_path: '/student/history',
       });
 
       return res.json({ message: 'Subjects rejected', rejectedPastSubjectIds: ids });
     }
 
-    // For other actions, we operate on pending rows only
-    const pastSubjects = pastSubjectsPending;
-    if (pastSubjects.length === 0) {
-      return res.status(400).json({ error: 'No pending past subjects found for this current subject' });
-    }
-
-    // Get old_campus_id
+    // Get old_campus_id (needed for Template3 lookup on all actions below)
     let oldCampusId = null;
     const student = await models.Student.findByPk(application.student_id, {
       attributes: ['old_campus_id'],
@@ -1505,6 +1491,53 @@ async function checkTemplate3ForCurrentSubject(req, res) {
       return res.status(400).json({ error: 'Old campus not found. Please set student\'s old_campus_id or prev_campus_name first.' });
     }
 
+    // check_template3: only evaluate pending past rows
+    if (action === 'check_template3') {
+      if (pastSubjectsPending.length === 0) {
+        return res.status(400).json({ error: 'No pending past subjects found for this current subject' });
+      }
+      const checkEvaluation = await evaluateTemplate3Bundle({
+        application,
+        newApplicationSubject,
+        pastSubjects: pastSubjectsPending,
+        oldCampusId,
+      });
+      return res.json({
+        applicationSubjectId,
+        currentSubject: {
+          application_subject_id: newApplicationSubject.application_subject_id,
+          application_subject_name: newApplicationSubject.application_subject_name,
+          course: newApplicationSubject.course,
+        },
+        results: checkEvaluation.results,
+        allMatch: checkEvaluation.allMatch,
+        someMatch: checkEvaluation.someMatch,
+        totalSubjects: pastSubjectsPending.length,
+        matchedCount: checkEvaluation.matchedCount,
+        requiredMappings: checkEvaluation.requiredMappings,
+        requiredCount: checkEvaluation.requiredCount,
+        missingRequiredCodes: checkEvaluation.missingRequiredCodes,
+        coverageIncomplete: checkEvaluation.coverageIncomplete,
+      });
+    }
+
+    const pastSubjectsSendableToSme = pastSubjectsAll.filter((ps) => {
+      const s = String(ps.approval_status || '').toLowerCase();
+      return ['pending', 'approved_template3', 'approved_sme', 'hos_pending', 'sme_reviewed_rejected'].includes(s);
+    });
+
+    if (action === 'send_all_to_sme') {
+      if (pastSubjectsSendableToSme.length === 0) {
+        return res.status(400).json({
+          error: 'No past subjects eligible to send to SME for this current subject',
+        });
+      }
+    } else if (pastSubjectsPending.length === 0) {
+      return res.status(400).json({ error: 'No pending past subjects found for this current subject' });
+    }
+
+    const pastSubjects = action === 'send_all_to_sme' ? pastSubjectsSendableToSme : pastSubjectsPending;
+
     const evaluation = await evaluateTemplate3Bundle({
       application,
       newApplicationSubject,
@@ -1521,26 +1554,6 @@ async function checkTemplate3ForCurrentSubject(req, res) {
       matchedCount,
       coverageIncomplete,
     } = evaluation;
-
-    if (action === 'check_template3') {
-      return res.json({
-        applicationSubjectId,
-        currentSubject: {
-          application_subject_id: newApplicationSubject.application_subject_id,
-          application_subject_name: newApplicationSubject.application_subject_name,
-          course: newApplicationSubject.course,
-        },
-        results,
-        allMatch,
-        someMatch,
-        totalSubjects: pastSubjects.length,
-        matchedCount,
-        requiredMappings,
-        requiredCount,
-        missingRequiredCodes,
-        coverageIncomplete,
-      });
-    }
 
     if (action === 'approve_all') {
       if (!allMatch) {
@@ -1630,19 +1643,21 @@ async function checkTemplate3ForCurrentSubject(req, res) {
           },
         });
 
-        // Only create if assignment doesn't exist
-        if (!existingAssignment) {
-          // Update past subject
-          await pastSubject.update({
-            approval_status: 'needs_sme_review',
-            needs_sme_review: true,
-          });
+        const programForCampus = await models.Program.findByPk(application.program_id, { attributes: ['campus_id'] });
+        const smeDays = await svc.processWindow.getSmeEvalDaysForCampus(programForCampus?.campus_id, getSmeEvalDays());
+        const dueAt = new Date(Date.now() + daysToMs(smeDays));
+        const assignedAt = new Date();
 
-          // Create SME assignment
-          const assignedAt = new Date();
-          const programForCampus = await models.Program.findByPk(application.program_id, { attributes: ['campus_id'] });
-          const smeDays = await svc.processWindow.getSmeEvalDaysForCampus(programForCampus?.campus_id, getSmeEvalDays());
-          const dueAt = new Date(Date.now() + daysToMs(smeDays));
+        await pastSubject.update({
+          approval_status: 'needs_sme_review',
+          needs_sme_review: true,
+          // Clear prior SME outcome so the evaluator gets a fresh review (not read-only)
+          sme_decision_status: null,
+          similarity_percentage: null,
+          sme_review_notes: null,
+        });
+
+        if (!existingAssignment) {
           await models.SMEAssignment.create({
             sme_id: sme.sme_id,
             application_id: application.ct_id,
@@ -1655,10 +1670,12 @@ async function checkTemplate3ForCurrentSubject(req, res) {
             assignment_status: 'pending',
           });
         } else {
-          // Update past subject status even if assignment exists (in case it was reset)
-          await pastSubject.update({
-            approval_status: 'needs_sme_review',
-            needs_sme_review: true,
+          await existingAssignment.update({
+            sme_id: sme.sme_id,
+            assigned_at: assignedAt,
+            due_at: dueAt,
+            completed_at: null,
+            assignment_status: 'pending',
           });
         }
 
@@ -1675,10 +1692,6 @@ async function checkTemplate3ForCurrentSubject(req, res) {
 
       // Notify SME only if there is at least 1 subject that truly requires SME
       if (sentSubjects.length > 0) {
-        const coordinatorLecturer = await models.Lecturer.findByPk(lecturerId, {
-          attributes: ['lecturer_name'],
-        });
-        const coordinatorName = coordinatorLecturer?.lecturer_name || 'Coordinator';
         const programForCampus = await models.Program.findByPk(application.program_id, { attributes: ['campus_id'] });
         const smeDays = await svc.processWindow.getSmeEvalDaysForCampus(programForCampus?.campus_id, getSmeEvalDays());
         const due = new Date(Date.now() + daysToMs(smeDays));
@@ -1687,7 +1700,7 @@ async function checkTemplate3ForCurrentSubject(req, res) {
           receiver_id: sme.lecturer?.lecturer_id,
           noti_type: 'sme_task_assigned',
           noti_title: 'New SME evaluation task',
-          noti_message: `${coordinatorName} sent you a task to evaluate a credit transfer subject. Due: ${due.toISOString().slice(0, 10)}.`,
+          noti_message: `You have a new SME credit transfer evaluation task. Due date: ${due.toISOString().slice(0, 10)}.`,
           link_path: '/expert/assignments',
         });
       }
@@ -1824,16 +1837,15 @@ async function sendApprovedSubjectsToHos(req, res) {
     }
 
     // Notify HOS (lecturer) that new review(s) are pending
-    const coordinatorLecturer = await models.Lecturer.findByPk(lecturerId, {
-      attributes: ['lecturer_name'],
-    });
-    const coordinatorName = coordinatorLecturer?.lecturer_name || 'Coordinator';
     await createNotification({
       receiver_type: 'lecturer',
       receiver_id: hos.lecturer?.lecturer_id,
       noti_type: 'hos_review_assigned',
       noti_title: 'New HOS review request',
-      noti_message: `${coordinatorName} sent ${created.length} subject(s) for your review.`,
+      noti_message:
+        created.length === 1
+          ? 'One credit transfer subject is pending your HOS review.'
+          : `${created.length} credit transfer subjects are pending your HOS review.`,
       link_path: '/hos/reviews',
     });
 
@@ -2297,13 +2309,12 @@ async function reapplySubject(req, res) {
 
     // Notify coordinator
     if (application.coordinator?.lecturer_id) {
-      const student = await models.Student.findByPk(studentId, { attributes: ['student_name'] });
       await createNotification({
         receiver_type: 'lecturer',
         receiver_id: application.coordinator.lecturer_id,
         noti_type: 'student_reapply',
-        noti_title: 'Student resubmitted a subject',
-        noti_message: `${student?.student_name || 'A student'} resubmitted past subjects for a credit transfer subject.`,
+        noti_title: 'Credit transfer subject resubmitted',
+        noti_message: 'A credit transfer subject was resubmitted and is ready for coordinator review.',
         link_path: `/coordinator/review/${application.ct_id}`,
       });
     }

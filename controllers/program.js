@@ -9,7 +9,7 @@ async function fetchProgramCoursesForStructure(programId) {
       {
         model: models.Course,
         as: 'course',
-        attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'category_id'],
+        attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'category_id', 'syllabus'],
         include: [
           {
             model: models.Category,
@@ -43,6 +43,7 @@ async function fetchProgramCoursesForStructure(programId) {
       course_code: c.course_code,
       course_name: c.course_name,
       course_credit: c.course_credit,
+      syllabus: c.syllabus || null,
       category_id: c.category_id,
       category: c.category,
       academic_year: pc.academic_year,
@@ -518,9 +519,87 @@ async function updateCourses(req, res) {
   }
 }
 
+// Upload UniKL course syllabus PDF (coordinator — Manage Courses)
+async function uploadCourseSyllabus(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    if (!lecturerId || req.user.userType !== 'lecturer') {
+      return res.status(403).json({ error: 'Only lecturers can upload course syllabi' });
+    }
+
+    const courseId = parseInt(req.params.courseId, 10);
+    if (!courseId) {
+      return res.status(400).json({ error: 'Valid courseId is required' });
+    }
+
+    const coordinator = await models.Coordinator.findOne({
+      where: { lecturer_id: lecturerId, end_date: null },
+      attributes: ['coordinator_id', 'program_id'],
+    });
+    if (!coordinator) {
+      return res.status(404).json({ error: 'Coordinator not found' });
+    }
+
+    const link = await models.ProgramCourse.findOne({
+      where: { program_id: coordinator.program_id, course_id: courseId },
+    });
+    if (!link) {
+      return res.status(403).json({ error: 'This course is not part of your programme' });
+    }
+
+    const course = await models.Course.findByPk(courseId);
+    if (!course) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    const uploadedFile = (req.files || []).find((f) => f.fieldname === 'course_syllabus_pdf');
+    if (!uploadedFile) {
+      return res.status(400).json({ error: 'course_syllabus_pdf (PDF) is required' });
+    }
+    if (uploadedFile.mimetype !== 'application/pdf') {
+      return res.status(400).json({ error: 'Only PDF files are allowed' });
+    }
+
+    const uploadDir = path.join(__dirname, '..', 'uploads', 'course-syllabi');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    if (course.syllabus) {
+      const oldName = path.basename(course.syllabus);
+      const oldPath = path.join(uploadDir, oldName);
+      if (fs.existsSync(oldPath)) {
+        try {
+          fs.unlinkSync(oldPath);
+        } catch (e) {
+          console.warn('uploadCourseSyllabus: could not delete old file:', e?.message || e);
+        }
+      }
+    }
+
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    const filename = `course-syllabus-${courseId}-${uniqueSuffix}${path.extname(uploadedFile.originalname) || '.pdf'}`;
+    const diskPath = path.join(uploadDir, filename);
+    fs.writeFileSync(diskPath, uploadedFile.buffer);
+
+    const dbFilePath = `/uploads/course-syllabi/${filename}`;
+    await course.update({ syllabus: dbFilePath });
+
+    res.json({
+      message: 'Course syllabus uploaded',
+      course_id: course.course_id,
+      syllabus: dbFilePath,
+    });
+  } catch (error) {
+    console.error('uploadCourseSyllabus error:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
   getProgramStructure,
   uploadProgramStructure,
   updateCourses,
+  uploadCourseSyllabus,
 };
 

@@ -82,6 +82,7 @@ router.get('/credit-transfer/sme/assignments', m.requireAdminOrUser, c.sme.getSM
 router.get('/credit-transfer/sme/subject/:applicationSubjectId', m.requireAdminOrUser, c.sme.getSubjectDetails);
 router.post('/credit-transfer/sme/review-subject/:applicationSubjectId', m.requireAdminOrUser, c.sme.reviewSubject);
 router.get('/credit-transfer/sme/syllabus/:filename', m.requireAdminOrUser, c.sme.getSyllabusFile);
+router.get('/credit-transfer/sme/course-syllabus/:filename', m.requireAdminOrUser, c.sme.getCourseSyllabusFile);
 
 // HOS routes
 router.get('/hos/reviews/stats', m.requireAdminOrUser, c.hos.getHosReviewStats);
@@ -105,6 +106,7 @@ router.get('/program/structure', m.requireAdminOrUser, c.program.getProgramStruc
 router.post('/program/structure', m.requireAdminOrUser, c.program.uploadProgramStructure);
 // PUT /api/program/courses - Update courses for coordinator's program
 router.put('/program/courses', m.requireAdminOrUser, c.program.updateCourses);
+router.post('/program/courses/:courseId/syllabus', m.requireAdminOrUser, c.program.uploadCourseSyllabus);
 
 // Template3 routes
 router.get('/template3', m.requireAdminOrUser, c.template3.getTemplate3Mappings);

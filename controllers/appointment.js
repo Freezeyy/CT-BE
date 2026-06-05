@@ -1,5 +1,6 @@
 const models = require('../models');
 const svc = require('../services');
+const { formatCampusDateTime } = require('../utils/datetime');
 
 async function createNotification({ receiver_type, receiver_id, noti_type, noti_title, noti_message, link_path = null }) {
   try {
@@ -127,13 +128,13 @@ async function createAppointment(req, res) {
 
     // Notify coordinator about new appointment
     const coordLecturerId = coordinator.lecturer?.lecturer_id || coordinator.lecturer_id;
-    const studentName = student.student_name || 'A student';
+    const appointmentWhen = formatCampusDateTime(appointment_start);
     await createNotification({
       receiver_type: 'lecturer',
       receiver_id: coordLecturerId,
       noti_type: 'appointment_scheduled',
       noti_title: 'New appointment booked',
-      noti_message: `${studentName} booked an appointment with you.`,
+      noti_message: `A new credit transfer consultation appointment was booked. Scheduled: ${appointmentWhen}.`,
       link_path: '/coordinator/appointment',
     });
 

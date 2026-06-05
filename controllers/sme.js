@@ -22,6 +22,19 @@ async function createNotification({ receiver_type, receiver_id, noti_type, noti_
   }
 }
 
+/** Copy latest SME evaluation fields onto every past row linked to this Template3 record. */
+async function syncPastSubjectsLinkedToTemplate3(template3Id, { similarity_percentage, sme_review_notes, sme_decision_status }) {
+  if (!template3Id) return;
+  await models.PastApplicationSubject.update(
+    {
+      similarity_percentage: similarity_percentage ?? null,
+      sme_review_notes: sme_review_notes ?? null,
+      ...(sme_decision_status ? { sme_decision_status } : {}),
+    },
+    { where: { template3_id: template3Id } },
+  );
+}
+
 async function propagateSmeDecisionToSimilarMappings({
   oldCampusId,
   oldProgrammeName,
@@ -200,14 +213,14 @@ async function getSMEAssignments(req, res) {
 
       const today = startOfToday();
       for (const a of pending) {
-        const msgKey = `assignment_id=${a.assignment_id}`;
+        const reminderPath = `/expert/assignments/${a.application_subject_id}`;
         const existing = await models.Notification.findOne({
           where: {
             noti_receiver_type: 'lecturer',
             noti_receiver_id: lecturerId,
             noti_type: 'sme_due_reminder',
             createdAt: { [Op.gte]: today },
-            noti_message: { [Op.like]: `%${msgKey}%` },
+            link_path: reminderPath,
           },
           attributes: ['noti_id'],
         });
@@ -217,8 +230,8 @@ async function getSMEAssignments(req, res) {
           receiver_id: lecturerId,
           noti_type: 'sme_due_reminder',
           noti_title: 'SME evaluation due soon',
-          noti_message: `Reminder: an SME evaluation is due on ${fmtDate(a.due_at)} (${msgKey}).`,
-          link_path: `/expert/assignments/${a.application_subject_id}`,
+          noti_message: `Reminder: SME credit transfer evaluation is due on ${fmtDate(a.due_at)}.`,
+          link_path: reminderPath,
         });
       }
     } catch (e) {
@@ -339,20 +352,6 @@ async function getSubjectDetails(req, res) {
       return res.status(403).json({ error: 'Only lecturers can view subject details' });
     }
 
-    // Find active SME
-    const sme = await models.SubjectMethodExpert.findOne({
-      where: { lecturer_id: lecturerId, end_date: null },
-      include: [{
-        model: models.Course,
-        as: 'course',
-        attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
-      }],
-    });
-
-    if (!sme) {
-      return res.status(404).json({ error: 'SME not found or not active' });
-    }
-
     // Get the current subject (NewApplicationSubject) with all its past subjects
     const newApplicationSubject = await models.NewApplicationSubject.findByPk(applicationSubjectId, {
       include: [
@@ -375,7 +374,7 @@ async function getSubjectDetails(req, res) {
         {
           model: models.Course,
           as: 'course',
-          attributes: ['course_id', 'course_name', 'course_code', 'course_credit'],
+          attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'syllabus'],
         },
         {
           model: models.PastApplicationSubject,
@@ -403,6 +402,26 @@ async function getSubjectDetails(req, res) {
       return res.status(404).json({ error: 'Subject not found' });
     }
 
+    const subjectCourseId =
+      newApplicationSubject.course_id || newApplicationSubject.course?.course_id || null;
+
+    const sme = await models.SubjectMethodExpert.findOne({
+      where: {
+        lecturer_id: lecturerId,
+        end_date: null,
+        ...(subjectCourseId ? { course_id: subjectCourseId } : {}),
+      },
+      include: [{
+        model: models.Course,
+        as: 'course',
+        attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'syllabus'],
+      }],
+    });
+
+    if (!sme) {
+      return res.status(404).json({ error: 'SME not found or not active for this course' });
+    }
+
     // Verify that at least one past subject has an SME assignment for this SME
     const pastSubjectIds = newApplicationSubject.pastApplicationSubjects.map(ps => ps.pastSubject_id);
     const assignments = await models.SMEAssignment.findAll({
@@ -416,8 +435,16 @@ async function getSubjectDetails(req, res) {
       return res.status(403).json({ error: 'This assignment does not belong to you' });
     }
 
-    // Get the new institution course details
-    const newCourse = sme.course;
+    // UniKL course on the application (includes coordinator-uploaded syllabus)
+    let newCourse = newApplicationSubject.course;
+    if (!newCourse && subjectCourseId) {
+      newCourse = await models.Course.findByPk(subjectCourseId, {
+        attributes: ['course_id', 'course_name', 'course_code', 'course_credit', 'syllabus'],
+      });
+    }
+    if (!newCourse) {
+      newCourse = sme.course;
+    }
 
     // Transform past subjects (parse stored SME topics comparison from Template3)
     const pastSubjects = newApplicationSubject.pastApplicationSubjects.map((ps) => {
@@ -452,12 +479,15 @@ async function getSubjectDetails(req, res) {
         application_subject_id: newApplicationSubject.application_subject_id,
         application_subject_name: newApplicationSubject.application_subject_name,
       },
-      newCourse: {
-        course_id: newCourse.course_id,
-        course_name: newCourse.course_name,
-        course_code: newCourse.course_code,
-        course_credit: newCourse.course_credit,
-      },
+      newCourse: newCourse
+        ? {
+            course_id: newCourse.course_id,
+            course_name: newCourse.course_name,
+            course_code: newCourse.course_code,
+            course_credit: newCourse.course_credit,
+            syllabus: newCourse.syllabus || null,
+          }
+        : null,
       application: {
         ct_id: newApplicationSubject.creditTransferApplication?.ct_id,
         ct_status: newApplicationSubject.creditTransferApplication?.ct_status,
@@ -637,17 +667,24 @@ async function reviewSubject(req, res) {
               template3_id: template3.template3_id,
             });
           } else {
+            await existingTemplate3.update({
+              similarity_percentage,
+              sme_review_notes: sme_review_notes || null,
+              topics_comparison:
+                topics_comparison != null
+                  ? JSON.stringify(topics_comparison)
+                  : existingTemplate3.topics_comparison,
+            });
             template3 = existingTemplate3;
-            // Backfill evaluation data if missing (keep first stored evaluation)
-            const shouldUpdateEval = (!template3.topics_comparison && topics_comparison) || (!template3.sme_review_notes && sme_review_notes);
-            if (shouldUpdateEval) {
-              await template3.update({
-                ...(template3.sme_review_notes ? {} : { sme_review_notes: sme_review_notes || null }),
-                ...(template3.topics_comparison ? {} : { topics_comparison: topics_comparison ? JSON.stringify(topics_comparison) : null }),
-              });
-            }
             await pastSubject.update({
               template3_id: existingTemplate3.template3_id,
+              similarity_percentage,
+              sme_review_notes: sme_review_notes || null,
+            });
+            await syncPastSubjectsLinkedToTemplate3(existingTemplate3.template3_id, {
+              similarity_percentage,
+              sme_review_notes: sme_review_notes || null,
+              sme_decision_status: 'approved_sme',
             });
           }
         }
@@ -706,11 +743,9 @@ async function reviewSubject(req, res) {
       where: { coordinator_id: application.coordinator_id },
       include: [{ model: models.Lecturer, as: 'lecturer', attributes: ['lecturer_id', 'lecturer_name'], required: false }],
     });
-    const smeLecturer = await models.Lecturer.findByPk(lecturerId, { attributes: ['lecturer_name'] });
-    const smeName = smeLecturer?.lecturer_name || 'SME';
     const subjectName = (sme.course?.course_code && sme.course?.course_name)
       ? `${sme.course.course_code} ${sme.course.course_name}`
-      : (newApplicationSubject.application_subject_name || 'a subject');
+      : (newApplicationSubject.application_subject_name || 'the UniKL course');
 
     if (coordinator?.lecturer?.lecturer_id) {
       await createNotification({
@@ -718,7 +753,7 @@ async function reviewSubject(req, res) {
         receiver_id: coordinator.lecturer.lecturer_id,
         noti_type: 'sme_decision',
         noti_title: 'SME evaluation completed',
-        noti_message: `${smeName} completed the evaluation for ${subjectName}.`,
+        noti_message: `SME evaluation completed for ${subjectName}.`,
         link_path: `/coordinator/review/${application.ct_id}`,
       });
     }
@@ -727,8 +762,8 @@ async function reviewSubject(req, res) {
       receiver_type: 'student',
       receiver_id: application.student_id,
       noti_type: 'sme_decision',
-      noti_title: 'Evaluation updated',
-      noti_message: `An evaluator has updated the evaluation for ${subjectName}.`,
+      noti_title: 'SME evaluation updated',
+      noti_message: `SME evaluation was updated for ${subjectName}. Please check your application history.`,
       link_path: '/student/history',
     });
 
@@ -790,12 +825,50 @@ async function getSyllabusFile(req, res) {
       return res.status(400).json({ error: 'Invalid file type' });
     }
 
-    // Send file with proper headers
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${safeFilename}"`);
+    res.setHeader('Cache-Control', 'no-store');
     res.sendFile(filePath);
   } catch (error) {
     console.error('Get syllabus file error:', error);
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Serve UniKL course syllabus PDF (uploaded by coordinator in Manage Courses)
+async function getCourseSyllabusFile(req, res) {
+  try {
+    const lecturerId = req.user.id;
+    if (!lecturerId || req.user.userType !== 'lecturer') {
+      return res.status(403).json({ error: 'Only lecturers can view syllabus files' });
+    }
+
+    const filename = req.params.filename;
+    if (!filename) {
+      return res.status(400).json({ error: 'Filename is required' });
+    }
+
+    const safeFilename = path.basename(filename);
+    if (safeFilename !== filename || filename.includes('..')) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    const filePath = path.join(__dirname, '..', 'uploads', 'course-syllabi', safeFilename);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    if (!filePath.toLowerCase().endsWith('.pdf')) {
+      return res.status(400).json({ error: 'Invalid file type' });
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${safeFilename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error('Get course syllabus file error:', error);
     res.status(500).json({ error: error.message });
   }
 }
@@ -805,5 +878,6 @@ module.exports = {
   getSubjectDetails,
   reviewSubject,
   getSyllabusFile,
+  getCourseSyllabusFile,
 };
 
