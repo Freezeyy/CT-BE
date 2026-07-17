@@ -38,6 +38,7 @@ async function createLecturer(req, res) {
       lecturer_image,
       campus_id, // Should match admin's campus_id
       is_admin = false,
+      is_superadmin = false,
     } = req.body;
 
     // Validate required fields
@@ -73,9 +74,16 @@ async function createLecturer(req, res) {
       return res.status(409).json({ error: 'That email is already taken' });
     }
 
-    // Only Super Admin can grant admin access
+    // Only Super Admin can grant admin or super admin access
     let grantAdmin = false;
-    if (is_admin) {
+    let grantSuperAdmin = false;
+    if (is_superadmin) {
+      if (!isSuperAdmin(req)) {
+        return res.status(403).json({ error: 'Only Super Admin can grant super admin access' });
+      }
+      grantSuperAdmin = true;
+      grantAdmin = true;
+    } else if (is_admin) {
       if (!isSuperAdmin(req)) {
         return res.status(403).json({ error: 'Only Super Admin can grant admin access' });
       }
@@ -92,6 +100,7 @@ async function createLecturer(req, res) {
       lecturer_password: hashpass,
       lecturer_image: lecturer_image || null,
       is_admin: grantAdmin,
+      is_superadmin: grantSuperAdmin,
       campus_id: lecturerCampusId,
     });
 
@@ -102,6 +111,7 @@ async function createLecturer(req, res) {
       lecturer_email: newLecturer.lecturer_email,
       lecturer_image: newLecturer.lecturer_image,
       is_admin: newLecturer.is_admin,
+      is_superadmin: newLecturer.is_superadmin,
       campus_id: newLecturer.campus_id,
     };
 
@@ -1147,6 +1157,60 @@ async function updateLecturerAdminAccess(req, res) {
         lecturer_name: lecturer.lecturer_name,
         lecturer_email: lecturer.lecturer_email,
         is_admin: lecturer.is_admin,
+        is_superadmin: lecturer.is_superadmin,
+        campus_id: lecturer.campus_id,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
+// Grant or revoke super admin access (Super Admin only)
+async function updateLecturerSuperAdminAccess(req, res) {
+  try {
+    if (!isSuperAdmin(req)) {
+      return res.status(403).json({ error: 'Only Super Admin can grant or revoke super admin access' });
+    }
+
+    const { lecturer_id } = req.params;
+    const { is_superadmin } = req.body;
+
+    if (typeof is_superadmin !== 'boolean') {
+      return res.status(400).json({ error: 'is_superadmin must be a boolean' });
+    }
+
+    const lecturer = await Lecturer.findByPk(lecturer_id);
+    if (!lecturer) {
+      return res.status(404).json({ error: 'Lecturer not found' });
+    }
+
+    if (parseInt(lecturer_id, 10) === parseInt(req.user.id, 10) && !is_superadmin) {
+      return res.status(400).json({ error: 'You cannot revoke your own super admin access' });
+    }
+
+    if (!is_superadmin && lecturer.is_superadmin) {
+      const superAdminCount = await Lecturer.count({ where: { is_superadmin: true } });
+      if (superAdminCount <= 1) {
+        return res.status(400).json({ error: 'Cannot revoke the last super admin account' });
+      }
+    }
+
+    await lecturer.update({
+      is_superadmin,
+      is_admin: is_superadmin ? true : lecturer.is_admin,
+    });
+
+    res.json({
+      message: is_superadmin
+        ? 'Super admin access granted successfully'
+        : 'Super admin access revoked successfully',
+      lecturer: {
+        lecturer_id: lecturer.lecturer_id,
+        lecturer_name: lecturer.lecturer_name,
+        lecturer_email: lecturer.lecturer_email,
+        is_admin: lecturer.is_admin,
+        is_superadmin: lecturer.is_superadmin,
         campus_id: lecturer.campus_id,
       },
     });
@@ -1170,6 +1234,7 @@ module.exports = {
   setProgramCourses,
   updateLecturerRole,
   updateLecturerAdminAccess,
+  updateLecturerSuperAdminAccess,
   getStaffAssignments,
   // Keep old endpoints for backward compatibility (optional - can remove later)
   assignCoordinator,

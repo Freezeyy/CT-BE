@@ -58,6 +58,7 @@ router.delete('/super-admin/campuses/:campus_id', m.requireAdmin, c.superAdmin.d
 // Admin - Staff role management (MUST be before /role route to avoid conflicts)
 router.get('/admin/staff-assignments', m.requireAdmin, c.admin.getStaffAssignments);
 router.put('/admin/lecturer/:lecturer_id/admin-access', m.requireAdmin, c.admin.updateLecturerAdminAccess);
+router.put('/admin/lecturer/:lecturer_id/superadmin-access', m.requireAdmin, c.admin.updateLecturerSuperAdminAccess);
 router.put('/admin/lecturer/:lecturer_id/role', m.requireAdmin, c.admin.updateLecturerRole);
 router.post('/admin/end-staff-role', m.requireAdmin, c.admin.endStaffRole);
 
