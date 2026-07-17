@@ -73,6 +73,15 @@ async function createLecturer(req, res) {
       return res.status(409).json({ error: 'That email is already taken' });
     }
 
+    // Only Super Admin can grant admin access
+    let grantAdmin = false;
+    if (is_admin) {
+      if (!isSuperAdmin(req)) {
+        return res.status(403).json({ error: 'Only Super Admin can grant admin access' });
+      }
+      grantAdmin = true;
+    }
+
     // Hash password
     const hashpass = bcrypt.hashSync(lecturer_password, bcrypt.genSaltSync());
 
@@ -82,7 +91,7 @@ async function createLecturer(req, res) {
       lecturer_email,
       lecturer_password: hashpass,
       lecturer_image: lecturer_image || null,
-      is_admin: is_admin || false,
+      is_admin: grantAdmin,
       campus_id: lecturerCampusId,
     });
 
@@ -1102,6 +1111,50 @@ async function endStaffRole(req, res) {
   }
 }
 
+// Grant or revoke campus admin access (Super Admin only)
+async function updateLecturerAdminAccess(req, res) {
+  try {
+    if (!isSuperAdmin(req)) {
+      return res.status(403).json({ error: 'Only Super Admin can grant or revoke admin access' });
+    }
+
+    const { lecturer_id } = req.params;
+    const { is_admin } = req.body;
+
+    if (typeof is_admin !== 'boolean') {
+      return res.status(400).json({ error: 'is_admin must be a boolean' });
+    }
+
+    const lecturer = await Lecturer.findByPk(lecturer_id);
+    if (!lecturer) {
+      return res.status(404).json({ error: 'Lecturer not found' });
+    }
+
+    if (lecturer.is_superadmin) {
+      return res.status(400).json({ error: 'Cannot change admin access for Super Admin accounts' });
+    }
+
+    if (parseInt(lecturer_id, 10) === parseInt(req.user.id, 10) && !is_admin) {
+      return res.status(400).json({ error: 'You cannot revoke your own admin access' });
+    }
+
+    await lecturer.update({ is_admin });
+
+    res.json({
+      message: is_admin ? 'Admin access granted successfully' : 'Admin access revoked successfully',
+      lecturer: {
+        lecturer_id: lecturer.lecturer_id,
+        lecturer_name: lecturer.lecturer_name,
+        lecturer_email: lecturer.lecturer_email,
+        is_admin: lecturer.is_admin,
+        campus_id: lecturer.campus_id,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
   createLecturer,
   getLecturers,
@@ -1116,6 +1169,7 @@ module.exports = {
   deleteCourse,
   setProgramCourses,
   updateLecturerRole,
+  updateLecturerAdminAccess,
   getStaffAssignments,
   // Keep old endpoints for backward compatibility (optional - can remove later)
   assignCoordinator,

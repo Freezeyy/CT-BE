@@ -38,6 +38,25 @@ direnv allow
 npx nodemon
 ```
 
+### Deploy (e.g. Raspberry Pi + PM2 + Cloudflare)
+
+1. Install dependencies (include dev deps if you run tests; production only needs `npm install` after pulling):
+   ```bash
+   cd CreditTransfer-BE && npm install
+   ```
+2. Set `PORT` in `.env` (e.g. `3000` or `3001`) and ensure PM2 / your tunnel points at that port.
+3. Verify the API is listening before checking Cloudflare:
+   ```bash
+   curl -i http://127.0.0.1:$PORT/
+   pm2 logs ct-backend --lines 30
+   ```
+4. A **502 from Cloudflare** usually means the origin is down (crash loop, wrong port, or tunnel misconfigured)—not a CORS issue.
+5. Frontend build must use your public API URL:
+   ```env
+   REACT_APP_API_ORIGIN=https://api.4fource.com
+   REACT_APP_API_BASE=https://api.4fource.com/api
+   ```
+
 ### Database sequlize thingy (SQL)
 
 1. fresh migrate
