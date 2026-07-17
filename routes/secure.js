@@ -72,6 +72,7 @@ router.get('/student/profile', m.requireAdminOrUser, c.creditTransfer.getStudent
 router.put('/student/profile', m.requireAdminOrUser, c.creditTransfer.updateStudentProfile);
 router.post('/credit-transfer/student/reapply-subject', m.requireAdminOrUser, c.creditTransfer.reapplySubject);
 router.get('/lecturer/profile', m.requireAdminOrUser, c.profile.getLecturerProfile);
+router.put('/lecturer/profile', m.requireAdminOrUser, c.profile.updateLecturerProfile);
 router.put('/lecturer/profile/password', m.requireAdminOrUser, c.profile.updateLecturerPassword);
 router.get('/credit-transfer/coordinator/applications', m.requireAdminOrUser, c.creditTransfer.getCoordinatorApplications);
 router.post('/credit-transfer/coordinator/review-subject', m.requireAdminOrUser, c.creditTransfer.reviewSubject);

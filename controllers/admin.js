@@ -993,20 +993,26 @@ async function updateLecturerRole(req, res) {
       }
     }
 
-    // End all existing active roles for this lecturer (only after request is validated)
+    // End only the conflicting active assignment for this role scope.
+    // Other role types (and other programs/courses) stay active so staff can hold multiple roles.
     const endDate = new Date();
-    await models.Coordinator.update(
-      { end_date: endDate },
-      { where: { lecturer_id, end_date: null } }
-    );
-    await models.SubjectMethodExpert.update(
-      { end_date: endDate },
-      { where: { lecturer_id, end_date: null } }
-    );
-    await models.HeadOfSection.update(
-      { end_date: endDate },
-      { where: { lecturer_id, end_date: null } }
-    );
+
+    if (role_type.toLowerCase() === 'coordinator') {
+      await models.Coordinator.update(
+        { end_date: endDate },
+        { where: { lecturer_id, program_id, end_date: null } }
+      );
+    } else if (role_type.toLowerCase() === 'sme' || role_type.toLowerCase() === 'subjectmethodexpert') {
+      await models.SubjectMethodExpert.update(
+        { end_date: endDate },
+        { where: { lecturer_id, course_id, end_date: null } }
+      );
+    } else if (role_type.toLowerCase() === 'hos' || role_type.toLowerCase() === 'headofsection') {
+      await models.HeadOfSection.update(
+        { end_date: endDate },
+        { where: { lecturer_id, program_id, end_date: null } }
+      );
+    }
 
     switch (role_type.toLowerCase()) {
       case 'coordinator':
