@@ -6,54 +6,49 @@ const models = require('../models');
 
 const refreshTokens = {};
 
-// Helper function to determine user role
+// Returns all active functional roles a lecturer holds, in priority order.
+// A lecturer can hold several roles at once (e.g. HOS + SME for multiple courses).
+async function getActiveFunctionalRoles(user) {
+  if (user.userType === 'student') return ['Student'];
+  if (user.userType !== 'lecturer') return [];
+
+  const lecturerId = user.lecturer_id || user.id;
+  const roles = [];
+
+  const hos = await models.HeadOfSection.findOne({
+    where: { lecturer_id: lecturerId, end_date: null },
+  });
+  if (hos) roles.push('Head Of Section');
+
+  const coordinator = await models.Coordinator.findOne({
+    where: { lecturer_id: lecturerId, end_date: null },
+  });
+  if (coordinator) roles.push('Program Coordinator');
+
+  const sme = await models.SubjectMethodExpert.findOne({
+    where: { lecturer_id: lecturerId, end_date: null },
+  });
+  if (sme) roles.push('Subject Method Expert');
+
+  return roles;
+}
+
+// Helper function to determine user's primary role (highest priority).
 async function determineUserRole(user) {
   if (user.userType === 'student') {
     return 'Student';
   }
 
-  // For lecturers, check their roles in priority order
   if (user.userType === 'lecturer') {
-    const lecturerId = user.lecturer_id || user.id;
-
     // NOTE: "Admin access" is an access flag, not a functional role.
     // Prefer returning the functional role (HOS/Coordinator/SME) when present,
     // while still returning is_admin/is_superadmin in the login payload.
-
-    // 1. Check if Head of Section
-    const hos = await models.HeadOfSection.findOne({
-      where: {
-        lecturer_id: lecturerId,
-        end_date: null, // Active role
-      },
-    });
-    if (hos) {
-      return 'Head Of Section';
+    const functionalRoles = await getActiveFunctionalRoles(user);
+    if (functionalRoles.length > 0) {
+      return functionalRoles[0];
     }
 
-    // 2. Check if Program Coordinator
-    const coordinator = await models.Coordinator.findOne({
-      where: {
-        lecturer_id: lecturerId,
-        end_date: null, // Active role
-      },
-    });
-    if (coordinator) {
-      return 'Program Coordinator';
-    }
-
-    // 3. Check if Subject Matter Expert
-    const sme = await models.SubjectMethodExpert.findOne({
-      where: {
-        lecturer_id: lecturerId,
-        end_date: null, // Active role
-      },
-    });
-    if (sme) {
-      return 'Subject Method Expert';
-    }
-
-    // 4. If no functional role, fall back to admin roles (if any)
+    // If no functional role, fall back to admin roles (if any)
     if (user.is_superadmin) return 'Super Admin';
     if (user.is_admin) return 'Administrator';
 
@@ -74,8 +69,9 @@ function login(req, res, next) {
       req.login(user, { session: false }, async (error) => {
         if (error) next(error);
         
-        // Determine user role
+        // Determine user's primary role and all active functional roles
         const role = await determineUserRole(user);
+        const roles = await getActiveFunctionalRoles(user);
         
         // Get user's name
         const userName = user.student_name || user.lecturer_name || user.email;
@@ -112,6 +108,7 @@ function login(req, res, next) {
           token,
           refreshToken,
           role,
+          roles,
           name: userName,
           userType: jwt_content.userType,
           is_admin: !!jwt_content.is_admin,
