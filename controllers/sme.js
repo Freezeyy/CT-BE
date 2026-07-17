@@ -181,8 +181,9 @@ async function getSMEAssignments(req, res) {
       return res.status(403).json({ error: 'Only lecturers can view SME assignments' });
     }
 
-    // Find active SME for this lecturer
-    const sme = await models.SubjectMethodExpert.findOne({
+    // Find all active SME roles for this lecturer.
+    // A lecturer can be SME for multiple courses, so collect every active role.
+    const smeRoles = await models.SubjectMethodExpert.findAll({
       where: { lecturer_id: lecturerId, end_date: null },
       include: [{
         model: models.Course,
@@ -191,9 +192,13 @@ async function getSMEAssignments(req, res) {
       }],
     });
 
-    if (!sme) {
+    if (!smeRoles || smeRoles.length === 0) {
       return res.status(404).json({ error: 'SME not found or not active' });
     }
+
+    const smeIds = smeRoles.map((s) => s.sme_id);
+    const courseBySmeId = {};
+    smeRoles.forEach((s) => { courseBySmeId[s.sme_id] = s.course; });
 
     // Due-soon reminders (no cron): whenever SME loads assignments, create reminder notifications
     // Throttle: at most once per day per assignment_id.
@@ -202,7 +207,7 @@ async function getSMEAssignments(req, res) {
       const in3Days = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
       const pending = await models.SMEAssignment.findAll({
         where: {
-          sme_id: sme.sme_id,
+          sme_id: { [Op.in]: smeIds },
           assignment_status: { [Op.in]: ['pending', null] },
           due_at: { [Op.lte]: in3Days, [Op.gte]: now }, // due soon
         },
@@ -241,7 +246,7 @@ async function getSMEAssignments(req, res) {
     // Get all assignments for this SME
     // Use LEFT JOIN for PastApplicationSubject to ensure assignments show even if past subject has issues
     const assignments = await models.SMEAssignment.findAll({
-      where: { sme_id: sme.sme_id },
+      where: { sme_id: { [Op.in]: smeIds } },
       include: [
         {
           model: models.PastApplicationSubject,
@@ -296,7 +301,7 @@ async function getSMEAssignments(req, res) {
         groupedByCurrentSubject[applicationSubjectId] = {
           application_subject_id: applicationSubjectId,
           application_subject_name: assignment.pastApplicationSubject?.newApplicationSubject?.application_subject_name,
-          course: sme.course,
+          course: courseBySmeId[assignment.sme_id] || null,
           application: {
             ct_id: assignment.pastApplicationSubject?.newApplicationSubject?.creditTransferApplication?.ct_id,
             ct_status: assignment.pastApplicationSubject?.newApplicationSubject?.creditTransferApplication?.ct_status,
@@ -518,19 +523,6 @@ async function reviewSubject(req, res) {
       return res.status(400).json({ error: 'Similarity percentage must be between 0 and 100' });
     }
 
-    // Find active SME
-    const sme = await models.SubjectMethodExpert.findOne({
-      where: { lecturer_id: lecturerId, end_date: null },
-      include: [{
-        model: models.Course,
-        as: 'course',
-      }],
-    });
-
-    if (!sme) {
-      return res.status(404).json({ error: 'SME not found or not active' });
-    }
-
     // Enforce CT process window (lecturer campus)
     const lecturer = await models.Lecturer.findByPk(lecturerId, { attributes: ['campus_id'] });
     const ctOpen = await svc.processWindow.isCtProcessOpenForCampus(lecturer?.campus_id);
@@ -558,6 +550,25 @@ async function reviewSubject(req, res) {
 
     if (!newApplicationSubject) {
       return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    // Find the active SME role matching this subject's course.
+    // A lecturer may be SME for multiple courses, so scope by the subject's course_id.
+    const subjectCourseId = newApplicationSubject.course_id || null;
+    const sme = await models.SubjectMethodExpert.findOne({
+      where: {
+        lecturer_id: lecturerId,
+        end_date: null,
+        ...(subjectCourseId ? { course_id: subjectCourseId } : {}),
+      },
+      include: [{
+        model: models.Course,
+        as: 'course',
+      }],
+    });
+
+    if (!sme) {
+      return res.status(404).json({ error: 'SME not found or not active for this course' });
     }
 
     // Verify that at least one past subject has an SME assignment for this SME
